@@ -2,8 +2,9 @@ import { useFrame, useThree } from '@react-three/fiber'
 import { useEffect, useRef } from 'react'
 import { Vector3 } from 'three'
 
+import { GARAGE } from '@shared/world'
+
 import { getBloxityState } from '../bloxity/store'
-import { launch } from './launch'
 import { placeLocalBubble } from './remote/nameplates'
 import { runtime } from './runtime'
 
@@ -28,8 +29,25 @@ const LOOK_SMOOTHING = 14
 
 const _desired = new Vector3()
 const _target = new Vector3()
-/** How far the view has swung round for the stretch (0-1), eased. */
-let stretchView = 0
+
+/** How close the camera may come to the garage's walls and roof. */
+const WALL_MARGIN = 0.9
+
+/**
+ * Pulls `desired` in along the line from `target` until it's inside the garage: the
+ * camera comes closer rather than ending up outside a wall looking at its back.
+ */
+function keepInside(target, desired) {
+  let t = 1
+  const limit = (from, to, min, max) => {
+    if (to < min) t = Math.min(t, (min - from) / (to - from))
+    else if (to > max) t = Math.min(t, (max - from) / (to - from))
+  }
+  limit(target.x, desired.x, GARAGE.minX + WALL_MARGIN, GARAGE.maxX - WALL_MARGIN)
+  limit(target.z, desired.z, GARAGE.minZ + WALL_MARGIN, GARAGE.maxZ - WALL_MARGIN)
+  limit(target.y, desired.y, -Infinity, GARAGE.height - 2.2)
+  if (t < 1) desired.lerpVectors(target, desired, Math.max(0, t))
+}
 
 /**
  * Third-person orbit camera around the player.
@@ -37,8 +55,8 @@ let stretchView = 0
  * Mouse: drag (either button) orbits, wheel zooms. Touch: one-finger drag orbits (the
  * joystick owns the left side of the screen as a separate element), pinch zooms.
  *
- * Orbit state lives in `runtime.camera`, so the roll can hand the camera
- * back exactly where it took it from. Drag speed is scaled by the player's Boxity
+ * Orbit state lives in `runtime.camera`, so coming back from a run picks up the view
+ * behind you. Drag speed is scaled by the player's Boxity
  * camera_sensitivity setting. Also places your own chat bubble each frame, once the
  * camera has moved (it needs the final camera to project).
  */
@@ -132,16 +150,12 @@ export function FollowCamera() {
     }
     const delta = Math.min(rawDelta, 0.05)
     const p = runtime.player.position
-    // Winding up a throw at the edge: over your shoulder, looking out and down past the
-    // edge at the hotel far below - where it's going.
-    const want = launch.gripping || launch.released ? 1 : 0
-    stretchView += (want - stretchView) * (1 - Math.exp(-5 * delta))
-    _target.set(p.x, p.y + LOOK_HEIGHT - 3.5 * stretchView, p.z - 7 * stretchView)
+    _target.set(p.x, p.y + LOOK_HEIGHT, p.z)
 
     // Spherical -> cartesian. yaw 0 puts the camera south of the player, looking north.
-    const yaw = runtime.camera.yaw * (1 - stretchView) + 0.28 * stretchView
-    const pitch = runtime.camera.pitch + 0.2 * stretchView
-    const distance = runtime.camera.distance - 2 * stretchView
+    const yaw = runtime.camera.yaw
+    const pitch = runtime.camera.pitch
+    const distance = runtime.camera.distance
     const horizontal = Math.cos(pitch) * distance
     _desired.set(
       _target.x + Math.sin(yaw) * horizontal,
@@ -149,7 +163,9 @@ export function FollowCamera() {
       _target.z + Math.cos(yaw) * horizontal,
     )
 
-    // After a slide the camera is far down the hill; jump back rather than swoop.
+    keepInside(_target, _desired)
+
+    // After a teleport (back from a run), jump straight there rather than swoop.
     if (runtime.camera.snap) {
       runtime.camera.snap = false
       initialised.current = false

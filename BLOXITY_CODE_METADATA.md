@@ -3,19 +3,20 @@ canDie: false
 hasScore: true
 ---
 
-# Phone Plunge: Boxity integration
+# Screwball Escape: Boxity integration
 
-The player cannot die: there is no death or game-over screen. You practise throwing on
-throw pads for Skill, walk to the DROP ZONE at the edge of the mountain-top lobby, hold DROP to charge
-the throw meter and let go: your phone falls through the clouds onto the hotel far below,
-smashes its glass roof and then floor after floor - more Skill smashes deeper, every
-metre pays Wins, and the meter (let go at the top of its wobble for PERFECT) adds up to
-x1.6 Wins and half as deep again. You always get another drop. Phones (24 kinds, bought
-with Wins) change how your phone looks and how much Skill each gain is worth.
+The player cannot die: there is no death or game-over screen. Players meet in a shared
+lobby (a toy screw factory's yard), walk into the elevator and pick a chapter and a
+difficulty. Each chapter is three rooms whose floor and walls are covered in screws: hold
+click (or USE on touch) on a screw to unscrew it into your bag, sell the bag at the SELL
+hopper for cash, and spend the cash on faster tools and upgrades for this run. Unscrew
+EVERY screw to open the exit door. Clearing a chapter pays Crystals, which buy permanent
+Perks and tool Skins in the lobby. A run can be left at any time and LOADed later.
 
-Built on the Phone Plunge template: inside the code the old names stay (`health` is
-Skill, a `tire` is a phone, a `pad` is a throw pad, a `roll` is a drop and a `zone` is a
-hotel floor), so saves and the server protocol are unchanged.
+Rooms are single-player: players inside a run are hidden from the lobby and from each
+other. The server checks every unscrew (reach, bag space, tool speed), every sale (standing
+at the hopper) and every purchase; the room layouts are shared code (`shared/layout.js`),
+so the client draws exactly the screws the server validates.
 
 ## Leaderboards
 
@@ -26,12 +27,13 @@ player leaves, each pod sends the changed scores of its verified players to
 
 | Board      | Label            | Score                                | Format  |
 |------------|------------------|--------------------------------------|---------|
-| `rebirths` | Rebirths         | `profile.rebirths`                   | number  |
-| `wins`     | Total Wins       | `profile.stats.totalWins`            | compact |
-| `distance` | Deepest Drop (m) | `floor(profile.stats.bestDistance)`  | compact |
+| `screws`   | Screws Unscrewed | `profile.stats.screws`               | compact |
+| `rooms`    | Rooms Escaped    | `profile.stats.rooms`                | number  |
+| `chapters` | Chapters Cleared | `profile.stats.chapters`             | number  |
 | `playtime` | Minutes Played   | `floor(profile.stats.playtime / 60)` | number  |
 
-All four are `order: desc`, `mode: best`, `reset: none`.
+All four are `order: desc`, `mode: best`, `reset: none`. (In the database the old column
+names are kept and remapped - see `server/src/db.js` - so no migration is needed.)
 
 ## Identity and saves
 
@@ -86,7 +88,7 @@ shows. Body proportions are applied by moving bones, so accessories follow them.
 |-------------------------|---------------------------------------------------------------|
 | `BLOXITY_REPORT_TOKEN`  | Token for leaderboard and room reports (none set = no reports) |
 | `MATCHMAKER_REPORT_URL` | Where the Open Rooms reporter posts (injected by Boxity hosting) |
-| `BLOXITY_GAME_ID`       | Hosted game id for reports (default `1-phone-drop`)              |
+| `BLOXITY_GAME_ID`       | Hosted game id for reports (default `unscrew-every-screw`)              |
 | `LEGION_WEBHOOK_SECRET` | Must match the webhook's `x-legion-webhook-secret` header     |
 | `MONGODB_URI`           | Shared database for profiles, Gems grants and the save-ticket secret. Required when hosted: without it saves go to a file inside the pod and are lost on every redeploy (the server logs an error and `/api/health` shows `db: "sqlite"`) |
 | `BLOXITY_API_URL` etc.  | Platform URLs, injected by Boxity hosting; no defaults are written in code (`server/src/bloxityEnv.js`) |

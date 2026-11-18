@@ -2,31 +2,35 @@ import { schema, t } from '@colyseus/schema'
 
 /**
  * Synced state, kept deliberately small: only what other players need to draw you.
- * Everything private (inventory, items, boosts...) goes to its owner alone as
- * 'profile' messages, never through the shared state.
+ * Everything private (the run's screws, cash, perks, quests...) goes to its owner alone
+ * as 'profile' messages, never through the shared state.
  */
 export const PlayerState = schema(
   {
     name: t.string(),
     /** Their verified Boxity account id ('' for guests), so chat can be matched to them. */
     uid: t.string(),
+    /** Lobby coordinates, or (while `inRun`) the coordinates of their own run's room. */
     x: t.float32(),
     y: t.float32(),
     z: t.float32(),
     rotY: t.float32(),
-    /** 'idle' | 'walk' | 'run' (pull-ups on a bar) | 'jump' | 'pull' (stretching back on the launch posts) | 'emote:<Boxity emote id>' */
+    /** 'idle' | 'walk' | 'jump' | 'emote:<Boxity emote id>' */
     anim: t.string(),
     /** What their Bloxity avatar wears, as JSON `{ equipped, proportions }` ('' = base). */
     look: t.string(),
-    tireId: t.string(),
-    /** Equipped pet species, at most 3. */
-    petIds: t.array('string'),
-    health: t.float64(),
-    wins: t.float64(),
-    rebirths: t.uint16(),
-    /** The world they're in (balance WORLDS): players only see others in theirs. */
-    world: t.uint8(),
-    level: t.uint16(),
+    /** Screws unscrewed, ever (profile.stats.screws). */
+    screws: t.float64().default(0),
+    /** Permanent Crystals (profile.crystals). */
+    crystals: t.float64().default(0),
+    /** Equipped tool skin id (balance SKINS). */
+    skin: t.string().default('classic'),
+    /** In a run's room right now (rooms are single-player: others hide them in the lobby). */
+    inRun: t.boolean().default(false),
+    /** The chapter id of the run they're in ('' in the lobby). */
+    chapter: t.string().default(''),
+    /** The run they're in ('' in the lobby): players see the others in theirs. */
+    runId: t.string().default(''),
   },
   'PlayerState',
 )

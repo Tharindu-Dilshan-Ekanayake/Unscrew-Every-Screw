@@ -46,7 +46,7 @@ export function parseGemWebhook(body) {
   const userId = profileIdOf(body.userId)
   if (!transactionId || !userId) return { ok: false, status: 400, error: 'transactionId and userId are required' }
   // An unknown sku can't be granted: refuse it, so Boxity refunds the player.
-  if (!GEM_PRODUCTS[body.sku]) return { ok: false, status: 400, error: `Unknown sku ${body.sku}` }
+  if (typeof body.sku !== 'string' || !Object.hasOwn(GEM_PRODUCTS, body.sku)) return { ok: false, status: 400, error: `Unknown sku ${body.sku}` }
   return {
     ok: true,
     grant: {

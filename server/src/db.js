@@ -3,7 +3,6 @@ import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { SPHINX_STOCK_DEFAULT } from '../../shared/balance.js'
 import { normalizeProfile } from '../../shared/logic.js'
 import { bloxity } from './bloxityEnv.js'
 import { setSaveTicketSecret } from './saveTickets.js'
@@ -16,7 +15,7 @@ import { setSaveTicketSecret } from './saveTickets.js'
  * - Otherwise one SQLite file through Node's built-in driver, for local development.
  *
  * Profiles are stored whole as JSON, with the leaderboard numbers copied alongside so
- * the boards are plain indexed queries.
+ * the boards are plain indexed queries (see BOARDS for which number goes where).
  *
  * Saves are owned. Loading a profile claims it for the session that loaded it
  * (`owner`), and a save from any other owner is dropped: when a player refreshes, or
@@ -30,9 +29,11 @@ import { setSaveTicketSecret } from './saveTickets.js'
  * - Gems purchases (`gem_grants`), recorded by Boxity's webhook on whichever pod it
  *   reached and applied by the pod the buyer plays on. A grant is claimed atomically
  *   before it is applied, so it lands exactly once however many pods look at it.
+ *
+ * A small key-value store (`kv`) holds the save-ticket secret (saveTickets.js).
  */
 
-const DB_PATH = process.env.DB_PATH || fileURLToPath(new URL('../data/tire.db', import.meta.url))
+const DB_PATH = process.env.DB_PATH || fileURLToPath(new URL('../data/screwball.db', import.meta.url))
 
 /**
  * The managed database's address. MONGODB_URI is the name Legion uses; the other common
@@ -48,14 +49,27 @@ export function mongoUriFrom(env = process.env) {
 /** A new random secret for save tickets (saveTickets.js), made once per database. */
 const newSecret = () => randomBytes(32).toString('hex')
 
-const BOARDS = { rebirths: 'rebirths', wins: 'totalWins', distance: 'bestDistance', playtime: 'playtime' }
+/**
+ * The leaderboard numbers, copied out of each profile on save. The column / field names
+ * are the ones the template this server grew from used; they're kept so existing
+ * databases need no migration, and only hold new numbers:
+ *
+ *   board      Mongo field     SQLite column    from the profile
+ *   screws     totalWins       total_wins       stats.screws    (screws unscrewed, ever)
+ *   rooms      rebirths        rebirths         stats.rooms     (rooms escaped)
+ *   chapters   bestDistance    best_distance    stats.chapters  (chapters cleared)
+ *   playtime   playtime        playtime         stats.playtime  (seconds played)
+ */
+const BOARDS = { screws: 'totalWins', rooms: 'rebirths', chapters: 'bestDistance', playtime: 'playtime' }
+/** The same boards' SQLite columns. */
+const COLUMNS = { screws: 'total_wins', rooms: 'rebirths', chapters: 'best_distance', playtime: 'playtime' }
 
 const leaderboardFields = (profile) => ({
   name: profile.name,
-  rebirths: profile.rebirths,
-  totalWins: profile.stats.totalWins,
+  rebirths: profile.stats.rooms,
+  totalWins: profile.stats.screws,
   playtime: profile.stats.playtime,
-  bestDistance: profile.stats.bestDistance,
+  bestDistance: profile.stats.chapters,
   updatedAt: profile.lastSeen,
 })
 
@@ -84,7 +98,6 @@ async function openMongo(uri) {
   await Promise.all([
     ...Object.values(BOARDS).map((field) => profiles.createIndex({ [field]: -1 })),
     gems.createIndex({ userId: 1, applied: 1 }),
-    kv.updateOne({ _id: 'sphinxStock' }, { $setOnInsert: { value: SPHINX_STOCK_DEFAULT } }, { upsert: true }),
   ])
 
   return {
@@ -163,14 +176,6 @@ async function openMongo(uri) {
     async releaseGem(transactionId, by) {
       await gems.updateOne({ _id: transactionId, appliedBy: by }, { $set: { applied: false }, $unset: { appliedAt: '', appliedBy: '' } })
     },
-    async stock() {
-      const doc = await kv.findOne({ _id: 'sphinxStock' })
-      return doc ? doc.value : SPHINX_STOCK_DEFAULT
-    },
-    async take() {
-      const doc = await kv.findOneAndUpdate({ _id: 'sphinxStock', value: { $gt: 0 } }, { $inc: { value: -1 } }, { returnDocument: 'after' })
-      return doc ? doc.value : null
-    },
     async secret() {
       // Made by whichever pod gets here first; every other pod reads the same one.
       const doc = await kv.findOneAndUpdate(
@@ -190,6 +195,7 @@ async function openSqlite(path) {
   const db = new DatabaseSync(path)
   db.exec(`
     PRAGMA journal_mode = WAL;
+    -- The leaderboard columns keep the template's names; what each holds: see BOARDS.
     CREATE TABLE IF NOT EXISTS profiles (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -221,11 +227,6 @@ async function openSqlite(path) {
   if (!db.prepare('PRAGMA table_info(profiles)').all().some((c) => c.name === 'carried_to')) {
     db.exec('ALTER TABLE profiles ADD COLUMN carried_to TEXT')
   }
-  const columns = { rebirths: 'rebirths', wins: 'total_wins', distance: 'best_distance', playtime: 'playtime' }
-  const readStock = () => {
-    const row = db.prepare("SELECT value FROM kv WHERE key = 'sphinxStock'").get()
-    return row ? Number(row.value) : SPHINX_STOCK_DEFAULT
-  }
 
   // One process owns this file, so `owner` has nothing to guard against here.
   return {
@@ -246,7 +247,7 @@ async function openSqlite(path) {
     },
     async top(limit) {
       const out = {}
-      for (const [board, column] of Object.entries(columns)) {
+      for (const [board, column] of Object.entries(COLUMNS)) {
         out[board] = db
           .prepare(`SELECT name, ${column} AS value FROM profiles WHERE carried_to IS NULL ORDER BY ${column} DESC LIMIT ?`)
           .all(limit)
@@ -294,28 +295,15 @@ async function openSqlite(path) {
         by,
       )
     },
-    async stock() {
-      return readStock()
-    },
     async secret() {
       db.prepare("INSERT INTO kv (key, value) VALUES ('saveTicketSecret', ?) ON CONFLICT(key) DO NOTHING").run(newSecret())
       return db.prepare("SELECT value FROM kv WHERE key = 'saveTicketSecret'").get()?.value ?? null
-    },
-    async take() {
-      const stock = readStock()
-      if (stock <= 0) return null
-      db.prepare("INSERT INTO kv (key, value) VALUES ('sphinxStock', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(
-        String(stock - 1),
-      )
-      return stock - 1
     },
     close: async () => db.close(),
   }
 }
 
 let store = null
-/** Sphinx stock as last known here; kept current from the database. */
-let stock = SPHINX_STOCK_DEFAULT
 
 /** 'mongo' or 'sqlite': which backend holds the saves (shown on /api/health). */
 let kind = null
@@ -325,7 +313,6 @@ export const storageKind = () => kind
 export async function openStorage({ mongoUri = mongoUriFrom(), path = DB_PATH, hosted = bloxity.hosted } = {}) {
   store = mongoUri ? await openMongo(mongoUri) : await openSqlite(path)
   kind = mongoUri ? 'mongo' : 'sqlite'
-  stock = await store.stock()
   setSaveTicketSecret(await store.secret())
   console.log(`[db] using ${mongoUri ? 'MongoDB' : `SQLite at ${path}`}`)
   if (hosted && !mongoUri) {
@@ -414,30 +401,8 @@ export const claimGemGrant = (transactionId, by) => store.claimGem(transactionId
 /** Gives back a claim whose player left before the grant could be applied. */
 export const releaseGemGrant = (transactionId, by) => store.releaseGem(transactionId, by)
 
-/** Top `limit` players per board: `{ rebirths: [{ name, value }], ... }`. */
-export const topPlayers = (limit = 10) => store.top(limit)
-
-export const getSphinxStock = () => stock
-
 /**
- * Takes one Sphinx. Synchronous for the purchase rules: decided on the stock known
- * here, then made permanent in the database, which has the final say (another pod may
- * have sold the last one a moment ago). Returns false when sold out.
+ * Top `limit` players per board (see BOARDS): `{ screws, rooms, chapters, playtime }`,
+ * each `[{ name, value }]`, best first. `playtime` is in seconds.
  */
-export function takeSphinx() {
-  if (stock <= 0) return false
-  stock -= 1
-  store
-    .take()
-    .then((left) => {
-      stock = left ?? 0
-    })
-    .catch((err) => console.error('[db] sphinx stock update failed', err))
-  return true
-}
-
-/** Re-reads the stock, so sales on other pods show up here. */
-export async function refreshStock() {
-  stock = await store.stock()
-  return stock
-}
+export const topPlayers = (limit = 10) => store.top(limit)

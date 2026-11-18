@@ -3,6 +3,7 @@ import express from 'express'
 import { defineRoom, defineServer } from '@colyseus/core'
 import { WebSocketTransport } from '@colyseus/ws-transport'
 
+import { GAME_ID } from '../../shared/balance.js'
 import { resolveIdentity } from './bloxityApi.js'
 import { bloxity } from './bloxityEnv.js'
 import { startBloxityLeaderboards } from './bloxityLeaderboards.js'
@@ -41,7 +42,7 @@ function routes(app) {
 
   app.get('/api/health', (_req, res) => {
     // `game` lets a development client tell this server from another project's.
-    res.json({ ok: true, game: 'phone-plunge', players: activePlayers.size, db: storageKind() })
+    res.json({ ok: true, game: GAME_ID, players: activePlayers.size, db: storageKind() })
   })
 
   /**

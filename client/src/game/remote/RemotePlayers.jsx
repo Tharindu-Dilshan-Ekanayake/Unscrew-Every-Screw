@@ -2,20 +2,15 @@ import { useFrame, useThree } from '@react-three/fiber'
 import { useEffect, useMemo, useRef } from 'react'
 import { Color, Matrix4, Quaternion, Vector3 } from 'three'
 
-import { ROLL_RECOVERY } from '@shared/balance'
-
 import { remotePlayers } from '../../net/remotePlayers'
 import { getQuality } from '../../store/quality'
 import { createBoxInstances, disposeBlocks } from '../blocks'
-import { TOSS_TIME } from '../practice'
 import { sharedMaterials, STYLE } from '../materials'
-import { T_RELEASE } from '../roll/dropPath'
-import { runtime } from '../runtime'
 import { hideNameplatesFrom, NAMEPLATE_POOL_SIZE, placeNameplate } from './nameplates'
 
 /** Remote players are drawn this far in the past, so 10 Hz updates interpolate. */
 const INTERP_DELAY_MS = 110
-const MAX_REMOTES = 8
+const MAX_REMOTES = 20
 const PARTS = 6
 const S = 0.36
 
@@ -50,8 +45,6 @@ const _q = new Quaternion()
 const _s = new Vector3()
 const _v = new Vector3()
 const _up = new Vector3(0, 1, 0)
-const _target = new Vector3()
-const _dir = new Vector3()
 const _prev = new Vector3()
 
 function lerpAngle(a, b, t) {
@@ -123,12 +116,9 @@ function writeNameplate(plate, name, at, distance, maxDistance, camera, size, ui
 }
 
 /**
- * Everyone else in the lobby: blocky avatars (one InstancedMesh for every limb of every
- * player), name tags and their pets (handed to the shared pet renderer). Also works out,
- * once a frame for everyone, what the real avatars (RemoteAvatars) need: each drop they
- * throw (`r.flying` while it plays, `r.throwT` through the throw). Winding up a throw
- * at the edge is anim 'pull'; on a throw pad they practise. Hidden past the preset's draw
- * distance.
+ * Everyone else in the lobby: blocky figures (one InstancedMesh for every limb of every
+ * player) for anyone not drawn as their real avatar (RemoteAvatars), and name tags over
+ * everyone. Hidden past the preset's draw distance.
  */
 export function RemotePlayers() {
   const camera = useThree((s) => s.camera)
@@ -136,7 +126,6 @@ export function RemotePlayers() {
   const bodyRef = useRef(null)
 
   const assets = useMemo(() => {
-    // Smooth toy boxes: the shared toy material, so no extra shader program.
     const body = createBoxInstances(MAX_REMOTES * PARTS, sharedMaterials().toy, STYLE.SMOOTH)
     body.castShadow = true
     return { body }
@@ -150,87 +139,38 @@ export function RemotePlayers() {
     [assets],
   )
 
-  useFrame((state, rawDelta) => {
+  useFrame((_state, rawDelta) => {
     const body = bodyRef.current
     if (!body) return
     const delta = Math.min(rawDelta, 0.05)
     const settings = getQuality()
-    const now = performance.now()
-    const renderTime = now - INTERP_DELAY_MS
-    const t = state.clock.elapsedTime
+    const renderTime = performance.now() - INTERP_DELAY_MS
 
     let instance = 0
     let plate = 0
-    runtime.remotePets.length = 0
-
     for (const r of remotePlayers.values()) {
       interpolate(r, renderTime)
       const moved = _prev.distanceTo(r.position)
       r.speed = r.speed * 0.8 + (moved / Math.max(delta, 1e-3)) * 0.2
-
-      // --- Their drop: the throw, replayed from the numbers the server sent ---------
-      const ghost = runtime.ghostRolls.get(r.sessionId)
-      r.flying = false
-      r.throwT = 0
-      if (ghost) {
-        const elapsed = (now - ghost.startedAt) / 1000
-        if (elapsed > ghost.duration + ROLL_RECOVERY + 1) runtime.ghostRolls.delete(r.sessionId)
-        else {
-          r.flying = true
-          r.throwT = Math.min(1, Math.max(0.01, elapsed / T_RELEASE))
-        }
-      }
-      r.pulling = r.anim === 'pull' && !r.flying
-      // A throw for Skill: each one flips their anim between toss0 and toss1.
-      const tossAnim = r.anim === 'toss0' || r.anim === 'toss1' ? r.anim : null
-      if (tossAnim && tossAnim !== r.lastToss) r.tossAt = now
-      r.lastToss = tossAnim
-      r.tossF = r.tossAt ? (now - r.tossAt) / 1000 / TOSS_TIME : 1
       r.shadow.position.copy(r.position)
 
-      // --- In the lobby -----------------------------------------------------------
-      const shownAt = r.position
-      const distance = camera.position.distanceTo(shownAt)
+      const distance = camera.position.distanceTo(r.position)
       const visible = distance < settings.remoteDrawDistance
       r.shadow.visible = visible
-      const tossing = r.tossF >= 0 && r.tossF < 1
 
-      // Players drawn as their real avatar (RemoteAvatars) skip the blocky figure.
       if (visible && !r.fullAvatar && instance + PARTS <= MAX_REMOTES * PARTS) {
-        const walking = !tossing && r.speed > 0.6
+        const walking = r.speed > 0.6
         if (walking) r.walkPhase += delta * (6 + Math.min(r.speed, 10) * 0.5)
         const swing = walking ? Math.sin(r.walkPhase) * 0.9 : 0
-        const facingEdge = r.pulling || r.flying
-        _q.setFromAxisAngle(_up, facingEdge ? Math.PI : r.yaw)
+        _q.setFromAxisAngle(_up, r.yaw)
         _base.compose(r.position, _q, _s.set(1, 1, 1))
-        // Arms: cocked back winding up, whipping over in the throw, or swinging along.
-        const arms = r.flying ? (r.throwT < 1 ? -3.2 + 2.6 * r.throwT : -0.3) : r.pulling ? -2.9 + Math.sin(t * 30) * 0.05 : tossing ? -1.7 - 1.3 * Math.cos(r.tossF * Math.PI * 2) : null
-        instance = writeFigure(body, instance, r, _base, swing, arms, 1)
+        instance = writeFigure(body, instance, r, _base, swing, null, 1)
       }
 
       // Name tag, just above the head (players are 1.8 tall).
       if (visible) {
         _v.set(r.position.x, r.position.y + 2.05, r.position.z)
         plate = writeNameplate(plate, r.name, _v, distance, settings.remoteNameDistance, camera, size, r.uid)
-      }
-
-      // Their pets: follow in formation, drawn by the shared pet renderer.
-      if (visible) {
-        const sin = Math.sin(r.yaw)
-        const cos = Math.cos(r.yaw)
-        for (let i = 0; i < r.petIds.length && i < r.pets.length; i += 1) {
-          const pet = r.pets[i]
-          pet.id = r.petIds[i]
-          const sx = i === 0 ? -1.5 : i === 1 ? 1.5 : 0
-          const sz = i === 2 ? -2.5 : -1.3
-          _target.set(r.position.x - cos * sx + sin * sz, r.position.y, r.position.z + sin * sx + cos * sz)
-          _dir.copy(pet.position)
-          pet.position.lerp(_target, 1 - Math.exp(-6 * delta))
-          const stepped = _dir.distanceTo(pet.position)
-          if (stepped > 0.005) pet.yaw = Math.atan2(pet.position.x - _dir.x, pet.position.z - _dir.z)
-          pet.hop = Math.abs(Math.sin(t * 7 + i)) * (stepped > 0.01 ? 0.35 : 0.08)
-          runtime.remotePets.push(pet)
-        }
       }
     }
     hideNameplatesFrom(plate)
@@ -239,11 +179,7 @@ export function RemotePlayers() {
     if (body.instanceColor) body.instanceColor.needsUpdate = true
   })
 
-  return (
-    <>
-      <primitive ref={bodyRef} object={assets.body} />
-    </>
-  )
+  return <primitive ref={bodyRef} object={assets.body} />
 }
 
 export default RemotePlayers

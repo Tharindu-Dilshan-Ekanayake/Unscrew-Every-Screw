@@ -7,7 +7,7 @@
 /** playerId -> { room, client } */
 export const activePlayers = new Map()
 
-/** Every live GameRoom, for cross-room broadcasts (stock counters, boards). */
+/** Every live GameRoom, for cross-room broadcasts (the leaderboards). */
 export const liveRooms = new Set()
 
 export function broadcastAll(type, payload) {

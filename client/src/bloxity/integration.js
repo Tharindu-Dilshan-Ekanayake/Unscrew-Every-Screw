@@ -4,6 +4,7 @@ import { getGame, useGame } from '../store/game'
 import { QUALITY_LEVELS, useQuality } from '../store/quality'
 import { handleChatMessage } from './chat'
 import { loadEmotes, playLocalEmote, stopLocalEmote } from './emotes'
+import { PANEL_AD_SLOTS } from './adLayout'
 import { safeCall, toUnsubscribe } from './sdk'
 import { hideScreen, setScreen } from './services'
 import { getBloxityState, useBloxityStore } from './store'
@@ -20,19 +21,20 @@ import { getBloxityState, useBloxityStore } from './store'
 
 /** Boards the game declares; scores come from the game server (or, offline, below). */
 export const LEADERBOARDS = [
-  { id: 'rebirths', label: 'Rebirths', order: 'desc', mode: 'best', format: 'number', reset: 'none' },
-  { id: 'wins', label: 'Total Wins', order: 'desc', mode: 'best', format: 'compact', reset: 'none' },
-  { id: 'distance', label: 'Deepest Drop (m)', order: 'desc', mode: 'best', format: 'compact', reset: 'none' },
+  { id: 'screws', label: 'Screws Unscrewed', order: 'desc', mode: 'best', format: 'compact', reset: 'none' },
+  { id: 'rooms', label: 'Rooms Escaped', order: 'desc', mode: 'best', format: 'number', reset: 'none' },
+  { id: 'chapters', label: 'Chapters Cleared', order: 'desc', mode: 'best', format: 'number', reset: 'none' },
   { id: 'playtime', label: 'Minutes Played', order: 'desc', mode: 'best', format: 'number', reset: 'none' },
 ]
 
 /**
  * The screens the game shows, for Boxity's screen ads (services.js setScreen): a modal
- * panel (shop, pets, rebirth...) and gameplay. Gameplay banners stay OFF - Boxity shows
- * none during play unless `gameplay` gets `show: true` here, and that is the
- * developer's call, not a default.
+ * panel (shop, perks, chapters...) and gameplay. A panel's ads sit left, right and
+ * bottom-centre (adLayout.js picks the ones that fit, and the panel makes room for them).
+ * Gameplay banners stay OFF - Boxity shows none during play unless `gameplay` gets
+ * `show: true` here, and that is the developer's call, not a default.
  */
-export const AD_SCREENS = { panel: {}, gameplay: {} }
+export const AD_SCREENS = { panel: { slots: PANEL_AD_SLOTS }, gameplay: {} }
 
 /** Once per page, right after `Legion.SDK.init()`. */
 export function setupOnce(sdk) {
@@ -144,8 +146,8 @@ function installSettings(sdk) {
 function onPlayerEvent(event, data) {
   switch (event) {
     case 'respawn_request':
-      // Not while your tire is rolling: you're frozen at the Roll Zone until it stops.
-      if (runtime.player.frozen) return
+      // Only in the lobby: inside a run you'd be thrown out of your room.
+      if (runtime.player.frozen || getGame().profile.run?.active) return
       stopLocalEmote()
       respawn()
       runtime.camera.snap = true
@@ -224,17 +226,17 @@ const OFFLINE_SUBMIT_MS = 15000
 function boardScores(profile) {
   const stats = profile?.stats || {}
   return {
-    rebirths: Math.floor(Number(profile?.rebirths) || 0),
-    wins: Math.floor(Number(stats.totalWins) || 0),
-    distance: Math.floor(Number(stats.bestDistance) || 0),
+    screws: Math.floor(Number(stats.screws) || 0),
+    rooms: Math.floor(Number(stats.rooms) || 0),
+    chapters: Math.floor(Number(stats.chapters) || 0),
     playtime: Math.floor((Number(stats.playtime) || 0) / 60),
   }
 }
 
 /**
  * Online, the game server submits leaderboard scores. Offline (no server, see
- * net/localServer.js) nobody would, so the browser does: after profile changes (each
- * roll, rebirth...), throttled, and only scores higher than the last sent ("best" mode
+ * net/localServer.js) nobody would, so the browser does: after profile changes,
+ * throttled, and only scores higher than the last sent ("best" mode
  * boards keep the best anyway). Signed-in players only: a guest has no board entry.
  */
 function installOfflineLeaderboards(sdk) {

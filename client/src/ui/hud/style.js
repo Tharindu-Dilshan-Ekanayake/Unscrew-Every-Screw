@@ -21,7 +21,14 @@ export const GRADIENTS = {
   priceShort: 'linear-gradient(180deg, #ffc2b8 0%, #ff6a55 50%, #e2242c 100%)',
   slate: 'linear-gradient(180deg, #7c8cb0 0%, #4a5778 50%, #2c344d 100%)',
   rewardCard: 'linear-gradient(180deg, #ffe45c 0%, #ffbf1f 55%, #ff9a12 100%)',
+  cash: 'linear-gradient(180deg, #e9ffd0 0%, #8dff5a 45%, #2fc43a 100%)',
+  crystal: 'linear-gradient(180deg, #e6fdff 0%, #7ff0ff 45%, #22a6ff 100%)',
+  card: 'linear-gradient(180deg, #3a4150 0%, #262b35 100%)',
+  cardLocked: 'linear-gradient(180deg, #2a2d33 0%, #1b1d22 100%)',
 }
+
+/** A responsive grid of shop cards. */
+export const CARD_GRID = { gridTemplateColumns: `repeat(auto-fill, minmax(${u(210)}, 1fr))`, gap: u(12) }
 
 /** The chunky black border every HUD button has. */
 export const chunkyBorder = (width = 4) => ({

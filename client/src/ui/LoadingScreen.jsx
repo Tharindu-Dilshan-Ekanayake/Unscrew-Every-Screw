@@ -5,29 +5,26 @@ import { iconUrl } from './icons'
 import StrokeText from './StrokeText'
 
 const TIPS = [
-  'Stand on a throw pad to practise throwing - every throw gives Skill!',
-  'More Skill = your phone smashes deeper, and every metre pays Wins!',
-  'Let go of DROP at the very top of the meter for a PERFECT throw: x1.5 depth, x1.6 Wins!',
-  'Rebirth at max level for x2, x3, x4... Skill and a higher level cap.',
-  'The deeper the floor, the more each metre pays.',
-  'Spend Wins on newer phones, pets and better throw pads.',
-  'Pets multiply all the Skill you gain.',
-  'You earn Skill every second your phone falls!',
-  'Every phone looks different - collect all 24!',
-  'Reach a new floor for the first time for a big Wins prize!',
+  'Hold click on a screw to unscrew it (on a phone: touch and hold it). Every screw goes in your bag!',
+  'Bag full? Walk onto the SELL hopper to turn screws into cash.',
+  'Gold screws sell for 15 plain ones. Keep your eyes open!',
+  'Crystal screws glow blue - they give Crystals for permanent Perks.',
+  'The Turbo Ratchet unscrews nine screws at once.',
+  'Remove EVERY screw to open the exit door.',
+  'Upgrade your Hand Speed early - it pays for itself.',
+  'Clear a chapter on Normal to unlock Hard (and more Crystals).',
+  'Leaving mid-run is fine: your run is saved, LOAD it from a play pad.',
+  'Perks like Helper Drone keep working in every run.',
 ]
 
 /**
- * The loading screen's backdrop, a launch park at golden hour in plain CSS (no image to
- * download): two floodlights glowing over a deep blue sky that warms to the horizon, the
- * dark line of the far stand, and the striped runway below it. Layers, top first.
+ * The loading screen's backdrop in plain CSS (no image to download): a workshop wall of
+ * screw heads in rows, under a warm glow.
  */
-const STADIUM_BACKDROP = [
-  'radial-gradient(circle at 14% 20%, rgba(255,250,225,0.95) 0 0.9%, rgba(255,236,190,0.35) 3%, transparent 9%)',
-  'radial-gradient(circle at 86% 20%, rgba(255,250,225,0.95) 0 0.9%, rgba(255,236,190,0.35) 3%, transparent 9%)',
-  'repeating-linear-gradient(180deg, rgba(255,255,255,0.8) 0 3px, transparent 3px 52px) bottom / 100% 40% no-repeat',
-  'repeating-linear-gradient(180deg, #2b9a47 0 26px, #37b455 26px 52px) bottom / 100% 40% no-repeat',
-  'linear-gradient(180deg, #132f74 0%, #2c5fc0 30%, #f0a067 50%, #ffd08c 54%, #232d48 54.4%, #34436a 60%)',
+const BACKDROP = [
+  'radial-gradient(circle at 50% 38%, rgba(255,214,140,0.55) 0%, transparent 55%)',
+  'radial-gradient(circle at 24px 24px, #d9dee5 0 9px, #8f98a4 9.5px 11px, transparent 11.5px) 0 0 / 48px 48px',
+  'linear-gradient(180deg, #2a3350 0%, #1a2036 100%)',
 ].join(', ')
 
 /**
@@ -63,30 +60,27 @@ export function LoadingScreen({ done }) {
       className="pp-font absolute inset-0 z-[100] flex flex-col items-center justify-center gap-8 transition-opacity duration-500"
       style={{
         opacity: done ? 0 : 1,
-        background: STADIUM_BACKDROP,
+        background: BACKDROP,
       }}
     >
       <div className="pp-loading-disc" aria-hidden="true">
-        <img src={iconUrl('tire')} alt="" width="150" height="150" draggable={false} />
+        <img src={iconUrl('screw')} alt="" width="150" height="150" draggable={false} />
       </div>
 
-      {/* The game's name: PHONE over a big rainbow THROW, tilted like a sticker. */}
+      {/* The game's name, tilted like a sticker. */}
       <h1 className="m-0 flex flex-col items-center text-center leading-none" style={{ transform: 'rotate(-3deg)' }}>
-        <span style={{ fontSize: 'clamp(36px, 8vw, 84px)' }}>
+        <span style={{ fontSize: 'clamp(40px, 9vw, 104px)' }}>
           <StrokeText stroke="0.16em" gradient="linear-gradient(180deg, #ffffff 0%, #ffffff 55%, #ffe36b 56%, #ffb21e 100%)">
-            +1 PHONE
+            Unscrew 
           </StrokeText>
         </span>
-        <span style={{ fontSize: 'clamp(44px, 10vw, 118px)', marginTop: '-0.08em' }}>
-          <StrokeText
-            stroke="0.15em"
-            gradient="linear-gradient(90deg, #ff4a4a 0%, #ff9a1e 18%, #ffe23a 36%, #4be05a 54%, #2fd0ff 72%, #b05cff 90%, #ff5fd2 100%)"
-          >
-            DROP
+        <span style={{ fontSize: 'clamp(40px, 9vw, 104px)', marginTop: '-0.08em' }}>
+          <StrokeText stroke="0.15em" gradient="linear-gradient(180deg, #e6fdff 0%, #5fe6ff 50%, #1f8fff 100%)">
+            Every Screw
           </StrokeText>
         </span>
         <span className="text-base md:text-xl" style={{ marginTop: '0.4em' }}>
-          <StrokeText stroke={5}>AIM • DROP • SMASH • REBIRTH</StrokeText>
+          <StrokeText stroke={5}>UNSCREW • SELL • UPGRADE • ESCAPE</StrokeText>
         </span>
       </h1>
 

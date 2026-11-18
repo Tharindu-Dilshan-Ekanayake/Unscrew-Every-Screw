@@ -3,7 +3,8 @@ import { GEM_PRODUCTS } from '@shared/balance'
 import { actions, send } from '../net/actions'
 import { currentRoomId, isOnline } from '../net/connection'
 import { getGame } from '../store/game'
-import { getSDK, safeCall } from './sdk'
+import { panelAdPlan } from './adLayout'
+import { getSDK, safeCall, toUnsubscribe } from './sdk'
 import { getBloxityState, useBloxityStore } from './store'
 
 /**
@@ -33,7 +34,7 @@ export function isRewardedAvailable() {
 }
 
 /**
- * Shows a rewarded ad for `placement` ('health-potion', 'wins-potion', ...) and, if it
+ * Shows a rewarded ad for `placement` ('free-crystals', 'speed-boost') and, if it
  * was watched to the end, claims the reward.
  *
  * @returns {Promise<{ ok: boolean, status: string, reason?: string }>} `ok` once the
@@ -190,24 +191,45 @@ export async function inviteFriend(userId) {
 // --- Screen ads -----------------------------------------------------------------------
 
 let screenType = null
+/** Stops watching the current screen's ads (whether they're showing). */
+let stopWatching = null
+
+const setAdInsets = (insets) => useBloxityStore.getState().setAdInsets(insets)
 
 /**
  * Tells Boxity which screen the player is on, for its screen ads: 'gameplay' normally,
  * 'panel' while a modal panel is open. integration.js switches this automatically
  * from the game store's `panel`; calling it again with the same type does nothing.
+ *
+ * A panel asks only for the ad slots that fit this screen (adLayout.js), and once Boxity
+ * says they're showing, the panel moves over and shrinks to leave them clear (Panel.jsx
+ * reads `adInsets`) - never on Boxity's word alone that ads might come.
  */
 export function setScreen(type) {
   if (!type || type === screenType) return
   const ads = getSDK()?.ads
   if (typeof ads?.screen !== 'function') return
   screenType = type
-  safeCall(ads.screen.bind(ads), type)
+  safeCall(stopWatching)
+  stopWatching = null
+  setAdInsets(null)
+  if (type !== 'panel') {
+    safeCall(ads.screen.bind(ads), type)
+    return
+  }
+  const plan = panelAdPlan(window.innerWidth, window.innerHeight)
+  const handle = safeCall(ads.screen.bind(ads), type, { skip: plan.skip, sizes: plan.sizes })
+  stopWatching = toUnsubscribe(safeCall(handle?.onStateChange?.bind(handle), (state) => setAdInsets(state === 'showing' ? plan.insets : null)))
+  if (handle?.state === 'showing') setAdInsets(plan.insets)
 }
 
 /** Takes Boxity's screen ads down (teardown). */
 export function hideScreen() {
   if (!screenType) return
   screenType = null
+  safeCall(stopWatching)
+  stopWatching = null
+  setAdInsets(null)
   const ads = getSDK()?.ads
   safeCall(ads?.hideScreen?.bind(ads))
 }
@@ -215,7 +237,7 @@ export function hideScreen() {
 // --- Leaderboards ----------------------------------------------------------------------
 
 /**
- * Opens Boxity's leaderboard overlay on board `id` ('rebirths', 'wins', 'distance',
+ * Opens Boxity's leaderboard overlay on board `id` ('screws', 'rooms', 'chapters',
  * 'playtime'). False when the portal can't show it (then show the game's own).
  */
 export function openBoxityLeaderboard(id) {

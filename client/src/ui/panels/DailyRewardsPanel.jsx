@@ -1,110 +1,53 @@
 import { DAILY_REWARDS } from '@shared/balance'
 import { formatClock } from '@shared/format'
-import { dailyStatus } from '@shared/logic'
+import { dailyState } from '@shared/logic'
 
 import { actions } from '../../net/actions'
 import { useGame } from '../../store/game'
 import Icon from '../Icon'
-import RewardIcon from '../RewardIcon'
 import StrokeText from '../StrokeText'
 import useNow from '../useNow'
+import { ChunkyButton } from '../hud/parts'
 import { GRADIENTS, u } from '../hud/style'
 import Panel from './Panel'
 
-function StatusButton({ status, onClaim, big }) {
-  const height = u(big ? 90 : 58)
-  const font = u(big ? 62 : status.state === 'next' ? 30 : 34)
-  if (status.state === 'ready') {
-    return (
-      <button
-        type="button"
-        onClick={onClaim}
-        className="pp-btn w-full"
-        style={{ height, borderRadius: u(5), background: GRADIENTS.greenButton, border: `${u(4)} solid #111`, fontSize: font }}
-      >
-        <StrokeText stroke={u(big ? 11 : 8)}>Claim!</StrokeText>
-      </button>
-    )
-  }
-  const text = status.state === 'claimed' ? 'Claimed' : status.state === 'next' ? formatClock(status.unlocksIn) : 'LOCKED'
-  return (
-    <div
-      className="flex w-full items-center justify-center"
-      style={{ height, borderRadius: u(5), background: GRADIENTS.greyButton, border: `${u(4)} solid #111`, fontSize: font, gap: u(6) }}
-    >
-      {status.state === 'claimed' && <Icon name="check" size={u(big ? 56 : 38)} />}
-      <StrokeText stroke={u(big ? 11 : 8)}>{text}</StrokeText>
-    </div>
-  )
-}
+const DAY_MS = 24 * 60 * 60 * 1000
 
-function DayCard({ day, status, big = false }) {
-  const reward = DAILY_REWARDS[day]
-  return (
-    <div
-      className="relative flex flex-col items-center"
-      style={{
-        padding: u(big ? 12 : 8),
-        borderRadius: u(4),
-        border: `${u(5)} solid #111`,
-        background: big
-          ? 'linear-gradient(135deg, #ff4fd8 0%, #ff9a1f 22%, #ffe53b 40%, #4ef05a 58%, #2fc6ff 76%, #8a5cff 100%)'
-          : 'linear-gradient(180deg, #ffe45c 0%, #ffc21f 40%, #ff9a12 100%)',
-        boxShadow: `inset 0 ${u(5)} 0 rgba(255,255,255,0.45)`,
-      }}
-    >
-      <div
-        className="w-full text-center"
-        style={{
-          fontSize: u(big ? 96 : 46),
-          lineHeight: 1.05,
-          background: big ? 'linear-gradient(180deg, rgba(255,255,255,0.35), rgba(255,255,255,0))' : 'linear-gradient(180deg, #ffd23a, #ff9a12)',
-          margin: `${u(-4)} ${u(-4)} ${u(4)}`,
-        }}
-      >
-        <StrokeText stroke={u(big ? 16 : 10)}>Day {day + 1}</StrokeText>
-      </div>
-      {!big && (
-        <div className="whitespace-nowrap" style={{ fontSize: u(reward.label.length > 9 ? 27 : 33) }}>
-          <StrokeText stroke={u(7)}>{reward.label}</StrokeText>
-        </div>
-      )}
-      <div className="relative flex flex-1 items-center justify-center" style={{ minHeight: u(big ? 300 : 126) }}>
-        <RewardIcon icon={reward.icon} size={u(big ? 270 : 120)} />
-        {!big && reward.sub && (
-          <span className="absolute" style={{ right: u(-6), bottom: u(-2), fontSize: u(46) }}>
-            <StrokeText stroke={u(9)} gradient={GRADIENTS.gold}>
-              {reward.sub}
-            </StrokeText>
-          </span>
-        )}
-      </div>
-      {big && (
-        <div style={{ fontSize: u(70), marginBottom: u(28) }}>
-          <StrokeText stroke={u(13)}>{reward.label}</StrokeText>
-        </div>
-      )}
-      <StatusButton status={status} big={big} onClaim={() => actions.claimDaily(day)} />
-    </div>
-  )
-}
-
-/** Seven-day login rewards: days 1-6 in a grid, the big Day 7 card on the right. */
+/** A week of Crystals: one claim a day. Miss a day and the week starts again. */
 export function DailyRewardsPanel() {
-  const profile = useGame((s) => s.profile)
+  const daily = useGame((s) => s.profile.daily)
   const now = useNow(1000)
-  const status = dailyStatus(profile, now)
-
+  const state = dailyState({ daily }, now)
   return (
-    <Panel title="DAILY REWARDS" width={1040}>
-      <div className="grid" style={{ gridTemplateColumns: '1fr 1fr 1fr 1.55fr', gap: u(14) }}>
-        <div className="col-span-3 grid grid-cols-3" style={{ gap: u(14) }}>
-          {[0, 1, 2, 3, 4, 5].map((day) => (
-            <DayCard key={day} day={day} status={status[day]} />
-          ))}
-        </div>
-        <DayCard day={6} status={status[6]} big />
+    <Panel title="DAILY REWARDS" icon="calendar" width={1100}>
+      <div className="grid" style={{ gridTemplateColumns: 'repeat(7, 1fr)', gap: u(10) }}>
+        {DAILY_REWARDS.map((crystals, i) => {
+          const claimed = i < state.claimed && !(state.canClaim && i === state.next)
+          const today = state.canClaim && i === state.next
+          return (
+            <div
+              key={i}
+              className="flex flex-col items-center"
+              style={{ padding: `${u(10)} ${u(4)}`, borderRadius: u(10), background: today ? GRADIENTS.rewardCard : claimed ? GRADIENTS.cardLocked : GRADIENTS.card, border: `${u(5)} solid ${today ? '#ffffff' : '#0b0c0e'}`, gap: u(4) }}
+            >
+              <span style={{ fontSize: u(24) }}>
+                <StrokeText stroke={u(5)}>Day {i + 1}</StrokeText>
+              </span>
+              <Icon name={claimed ? 'check' : 'crystal'} size={u(i === 6 ? 74 : 58)} />
+              <span style={{ fontSize: u(30) }}>
+                <StrokeText stroke={u(6)} gradient={GRADIENTS.crystal}>
+                  {crystals}
+                </StrokeText>
+              </span>
+            </div>
+          )
+        })}
       </div>
+      <ChunkyButton gradient={state.canClaim ? GRADIENTS.greenButton : GRADIENTS.greyButton} disabled={!state.canClaim} onClick={() => actions.claimDaily()} className="w-full" style={{ height: u(80), marginTop: u(16) }}>
+        <span style={{ fontSize: u(38) }}>
+          <StrokeText stroke={u(7)}>{state.canClaim ? `CLAIM DAY ${state.next + 1}` : `Next reward in ${formatClock(DAY_MS - (now % DAY_MS))}`}</StrokeText>
+        </span>
+      </ChunkyButton>
     </Panel>
   )
 }
