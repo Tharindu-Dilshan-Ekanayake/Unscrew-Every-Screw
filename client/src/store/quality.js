@@ -13,37 +13,26 @@ export const PRESETS = {
   LOW: {
     dpr: 1,
     antialias: false,
-    /** 'blob' = fake contact shadows only; 'realtime' = shadow-mapped sun. */
+    /** 'blob' = fake contact shadows only; 'realtime' = shadow-mapped sun (lobby only). */
     shadows: 'blob',
     shadowMapSize: 0,
     particles: false,
-    speedLines: true,
-    /** Motion blur down the sides at speed (post-processing): samples a pixel, 0 = off. */
-    motionBlur: 0,
-    viewDistance: 190,
+    viewDistance: 160,
     fogNear: 60,
-    cloudCount: 8,
+    /** Sides on a screw head: the biggest triangle cost in a room (x ~1,200 screws). */
+    screwSegments: 8,
+    /** Flying screws, sparks and the drone's lights. */
+    screwFx: false,
     /** Max side of any generated texture. */
     maxTexture: 512,
     /**
-     * Other players are drawn this far away - the whole lobby - and the nearest
-     * `remoteAvatars` of them within `remoteAvatarDistance` as their real Boxity avatar
-     * (anyone else as the blocky figure). On every preset that's everyone in the room:
-     * players want to see each other as themselves, across the whole lobby. A Boxity
-     * avatar is ~100 triangles and one draw call plus one per worn item, so a full room
-     * of 8 typically adds 20-40 draw calls; if a weak device can't keep up, the FPS
-     * monitor lowers the resolution (RENDER_SCALES) rather than taking avatars away.
+     * Other players in the lobby: drawn this far away, the nearest `remoteAvatars` within
+     * `remoteAvatarDistance` as their real Boxity avatar (anyone else as a blocky figure).
      */
-    remoteDrawDistance: 150,
-    remoteAvatars: 7,
-    remoteAvatarDistance: 150,
+    remoteDrawDistance: 120,
+    remoteAvatars: 5,
+    remoteAvatarDistance: 60,
     remoteNameDistance: 40,
-    /** World labels fade out past this. */
-    labelDistance: 70,
-    /** How much of the canyon's scenery to spawn (0-1). */
-    decorDensity: 0.45,
-    /** Board and egg halo size multiplier. */
-    boardGlow: 0.8,
   },
   MEDIUM: {
     dpr: 1.25,
@@ -51,19 +40,15 @@ export const PRESETS = {
     shadows: 'blob',
     shadowMapSize: 0,
     particles: true,
-    speedLines: true,
-    motionBlur: 8,
-    viewDistance: 300,
+    viewDistance: 260,
     fogNear: 100,
-    cloudCount: 14,
+    screwSegments: 12,
+    screwFx: true,
     maxTexture: 1024,
     remoteDrawDistance: 150,
-    remoteAvatars: 7,
+    remoteAvatars: 9,
     remoteAvatarDistance: 150,
     remoteNameDistance: 55,
-    labelDistance: 110,
-    decorDensity: 0.75,
-    boardGlow: 1,
   },
   HIGH: {
     dpr: 1.5,
@@ -71,23 +56,19 @@ export const PRESETS = {
     shadows: 'realtime',
     shadowMapSize: 1024,
     particles: true,
-    speedLines: true,
-    motionBlur: 12,
-    viewDistance: 460,
+    viewDistance: 360,
     fogNear: 140,
-    cloudCount: 18,
+    screwSegments: 16,
+    screwFx: true,
     maxTexture: 1024,
     remoteDrawDistance: 150,
-    remoteAvatars: 7,
+    remoteAvatars: 9,
     remoteAvatarDistance: 150,
     remoteNameDistance: 70,
-    labelDistance: 150,
-    decorDensity: 1,
-    boardGlow: 1,
   },
 }
 
-const STORAGE_KEY = 'pp.quality'
+const STORAGE_KEY = 'se.quality'
 
 /**
  * Resolution steps, as a fraction of the preset's pixel ratio. Below LOW, a weak PC or
@@ -140,8 +121,8 @@ export const useQuality = create((set, get) => ({
   settings: PRESETS[initialLevel],
   /**
    * Bumped when the player picks a new level by hand: the 3D view is rebuilt from
-   * scratch, so things set when it's made (antialiasing, scenery density, tire detail)
-   * take the new level at once.
+   * scratch, so things set when it's made (antialiasing, screw detail) take the new
+   * level at once.
    */
   rebuild: 0,
   /** Index into RENDER_SCALES: how far resolution has been dropped to keep FPS up. */

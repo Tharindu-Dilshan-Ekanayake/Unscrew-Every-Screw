@@ -1,12 +1,15 @@
 import { Vector3 } from 'three'
 
 import { runtime } from '../game/runtime'
-import { getGame } from '../store/game'
+import { getGame, inRun } from '../store/game'
 
 /**
  * Other players, as the network last described them. Network callbacks write here;
  * the renderer reads it each frame and interpolates between snapshots, drawing
  * everyone ~110 ms in the past so 10 Hz updates still move smoothly.
+ *
+ * In the lobby you see everyone else in the lobby; inside a run, your party (the players
+ * in the same run) - everyone else is in rooms of their own.
  */
 
 /** sessionId -> remote player */
@@ -14,13 +17,19 @@ export const remotePlayers = new Map()
 
 const MAX_SNAPSHOTS = 24
 
-/** Everyone's synced state, whichever world they're in, so a change of world can redraw them. */
+/** Everyone's synced state, wherever they are, so a change can redraw them. */
 const latest = new Map()
+
+function visibleTo(state) {
+  const game = getGame()
+  if (!inRun(game)) return !state.inRun
+  const myRun = game.profile.run?.runId || ''
+  return Boolean(myRun) && state.runId === myRun
+}
 
 export function upsertRemotePlayer(sessionId, state) {
   latest.set(sessionId, state)
-  // Only players in your world are drawn: each world feels like its own place.
-  if ((state.world || 0) !== (getGame().profile.world || 0)) {
+  if (!visibleTo(state)) {
     dropRemotePlayer(sessionId)
     return
   }
@@ -36,20 +45,13 @@ export function upsertRemotePlayer(sessionId, state) {
       yaw: state.rotY,
       speed: 0,
       anim: 'idle',
-      tireId: 'bicycle',
+      skin: 'classic',
+      screws: 0,
       /** Their avatar's outfit, parsed from `look`; `lookKey` is the raw string. */
       look: null,
       lookKey: '',
-      petIds: [],
-      /** Follow state per equipped pet, grown as needed and reused. */
-      pets: [],
       walkPhase: 0,
-      /** Their drop: `flying` while it plays, `throwT` (0-1) through their throw (RemotePlayers fills them in). */
-      throwT: 0,
-      flying: false,
-      pulling: false,
     }
-    // Its own point: while they fly it follows them down the runway (RemotePlayers).
     r.shadow = { position: r.position.clone(), size: 1.1, visible: true }
     runtime.shadowCasters.add(r.shadow)
     remotePlayers.set(sessionId, r)
@@ -57,9 +59,8 @@ export function upsertRemotePlayer(sessionId, state) {
   r.name = state.name
   r.uid = state.uid || ''
   r.anim = state.anim
-  r.tireId = state.tireId
-  r.level = state.level
-  r.rebirths = state.rebirths
+  r.skin = state.skin || 'classic'
+  r.screws = state.screws || 0
   if (state.look !== r.lookKey) {
     r.lookKey = state.look
     try {
@@ -68,10 +69,6 @@ export function upsertRemotePlayer(sessionId, state) {
       r.look = null
     }
   }
-  r.petIds = [...state.petIds]
-  while (r.pets.length < r.petIds.length) {
-    r.pets.push({ id: '', position: r.position.clone(), yaw: 0, hop: 0 })
-  }
   const last = r.snaps[r.snaps.length - 1]
   if (!last || last.x !== state.x || last.y !== state.y || last.z !== state.z || last.r !== state.rotY) {
     r.snaps.push({ t: performance.now(), x: state.x, y: state.y, z: state.z, r: state.rotY })
@@ -79,8 +76,8 @@ export function upsertRemotePlayer(sessionId, state) {
   }
 }
 
-/** You changed world: shows the players in the new one, hides the rest. */
-export function refreshRemoteWorlds() {
+/** You went into a run or came out: shows or hides everyone accordingly. */
+export function refreshRemoteVisibility() {
   for (const [sessionId, state] of latest) upsertRemotePlayer(sessionId, state)
 }
 
@@ -93,13 +90,10 @@ function dropRemotePlayer(sessionId) {
   const r = remotePlayers.get(sessionId)
   if (!r) return
   runtime.shadowCasters.delete(r.shadow)
-  runtime.ghostRolls.delete(sessionId)
   remotePlayers.delete(sessionId)
 }
 
 export function clearRemotePlayers() {
   for (const id of [...remotePlayers.keys()]) removeRemotePlayer(id)
   latest.clear()
-  runtime.remotePets.length = 0
-  runtime.ghostRolls.clear()
 }

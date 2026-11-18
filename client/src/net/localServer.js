@@ -1,11 +1,16 @@
-import { applyOfflineProgress, normalizeProfile } from '@shared/logic'
-import { PlayerSession } from '@shared/session'
+import { normalizeProfile } from '@shared/logic'
+import { PadManager, standingOn } from '@shared/pads'
+import { PartyManager } from '@shared/parties'
+import { PlayerSession, startParty } from '@shared/session'
+import { playPadAt } from '@shared/world'
 
 import { runtime } from '../game/runtime'
 
-const SAVE_KEY = 'tr.save.v1'
+const SAVE_KEY = 'screwball.save.v1'
 const TICK_MS = 100
 const SAVE_MS = 5000
+/** The one player's key in the party manager. */
+const ME = 'local'
 
 function loadSave() {
   try {
@@ -16,9 +21,10 @@ function loadSave() {
 }
 
 /**
- * Offline stand-in for the game server: runs the same PlayerSession the Colyseus room
- * runs, against a save in localStorage. Used when no server is configured or it can't
- * be reached, so the game is always playable.
+ * Offline stand-in for the game server: runs the same PlayerSession (and the SOLO
+ * countdown and team pads) the Colyseus room runs, against a save in localStorage. Used
+ * when no server is configured or it can't be reached, so the game is always playable -
+ * alone (a team pad seats you, but no one else is here to fill it).
  *
  * @param {{ id: string, name: string, onEvent: (type: string, payload: object) => void }} options
  * @returns {{ send: (type: string, payload?: object) => void, close: () => void }}
@@ -26,8 +32,6 @@ function loadSave() {
 export function createLocalServer({ id, name, onEvent }) {
   const profile = normalizeProfile(loadSave(), id, name)
   const startedAt = Date.now()
-  // "Keep training while you're offline": credit the pad you logged off on.
-  const offline = applyOfflineProgress(profile, startedAt)
 
   const session = new PlayerSession(profile, {
     now: startedAt,
@@ -35,7 +39,25 @@ export function createLocalServer({ id, name, onEvent }) {
     // would never see a change (same reference) and could edit server state.
     emit: (type, payload) => onEvent(type, payload ? structuredClone(payload) : payload),
     getPosition: () => runtime.player.position,
+    // Offline there's no one to check positions: the teleport event moves you.
+    onTeleport: () => {},
   })
+
+  const parties = new PartyManager({
+    maxSize: 1,
+    onStart: (party) => startParty(session, [session], party, Date.now()),
+    onChange: () => onEvent('parties', parties.view(ME, Date.now())),
+  })
+  const pads = new PadManager({
+    onStart: (party) => startParty(session, [session], party, Date.now()),
+    onChange: () => onEvent('pads', pads.view(ME, Date.now())),
+    canHost: (_key, config) => session.canHost(config),
+  })
+  const standing = () => {
+    if (session.inRun || parties.partyOf(ME)) return new Map()
+    const p = runtime.player.position
+    return standingOn(playPadAt, [{ key: ME, x: p.x, z: p.z, name }])
+  }
 
   const save = () => {
     try {
@@ -50,6 +72,9 @@ export function createLocalServer({ id, name, onEvent }) {
   const tickId = setInterval(() => {
     const t = performance.now()
     session.tick(Math.min(0.5, (t - last) / 1000), Date.now())
+    parties.tick(Date.now())
+    pads.sync(standing(), Date.now())
+    pads.tick(Date.now())
     last = t
   }, TICK_MS)
   const saveId = setInterval(save, SAVE_MS)
@@ -60,7 +85,22 @@ export function createLocalServer({ id, name, onEvent }) {
   document.addEventListener('visibilitychange', onHide)
 
   session.sendProfile()
-  if (offline) onEvent('offline', offline)
+  onEvent('parties', parties.view(ME, startedAt))
+  onEvent('pads', pads.view(ME, startedAt))
+
+  /** The party messages, checked as the server checks them. */
+  const party = (type, payload = {}) => {
+    const now = Date.now()
+    if (type === 'createParty') {
+      const action = payload.action === 'load' ? 'load' : 'start'
+      const chapter = action === 'load' ? profile.run?.chapter : String(payload.chapter || '')
+      const diff = action === 'load' ? profile.run?.diff : Number(payload.diff)
+      if (!Number.isInteger(diff) || !session.canHost({ action, chapter, diff })) return
+      if (pads.padOf(ME)) return
+      parties.create(ME, name, { chapter, diff, size: 1, action }, now)
+    } else if (type === 'leaveParty') parties.leave(ME)
+    else if (type === 'startParty') parties.go(ME, now)
+  }
 
   return {
     send(type, payload) {
@@ -77,6 +117,10 @@ export function createLocalServer({ id, name, onEvent }) {
         save()
         return
       }
+      if (type === 'createParty' || type === 'leaveParty' || type === 'startParty') {
+        party(type, payload)
+        return
+      }
       session.handle(type, payload, Date.now())
     },
     close() {
@@ -84,6 +128,7 @@ export function createLocalServer({ id, name, onEvent }) {
       clearInterval(saveId)
       window.removeEventListener('beforeunload', save)
       document.removeEventListener('visibilitychange', onHide)
+      session.exitRun(Date.now(), { silent: true })
       save()
     },
   }

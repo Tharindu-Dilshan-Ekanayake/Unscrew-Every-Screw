@@ -1,582 +1,507 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
+import { BAG_LEVELS, CHAPTERS, DAY_MS, DIFFICULTIES, PERKS, RATE_SLACK, REACH_SLACK, SCREW_CRYSTAL, SCREW_PLAIN, TOOLS } from '../../shared/balance.js'
+import { decodeBits, getBit } from '../../shared/bits.js'
+import { formatNumber } from '../../shared/format.js'
+import { atDoor, atHopper, clampToRoom, getLayout, screwKinds, screwPosition } from '../../shared/layout.js'
 import {
-  AD_REWARDS,
-  DROP_ROOF,
-  EGGS,
-  GEM_PRODUCTS,
-  healthForLevel,
-  levelCap,
-  nextRebirthGift,
-  PADS,
-  PETS,
-  rebirthGift,
-  rebirthMultiplier,
-  TIRES,
-  TOSS_COOLDOWN,
-  TUTORIAL,
-  WORLD_PORTALS,
-  WORLD_ZONES,
-  WORLDS,
-  ZONES,
-} from '../../shared/balance.js'
-import { formatDistance, formatNumber } from '../../shared/format.js'
-import {
-  applyAdReward,
-  applyGemProduct,
-  applyRebirth,
-  applyRoll,
-  baseRollWins,
-  applyTrain,
-  buyHealthPack,
-  buyTire,
+  actionTime,
+  advanceRoom,
+  bagCapacity,
   createProfile,
-  createSession,
-  hatchEgg,
-  healthPacks,
-  isPadUnlocked,
-  levelFor,
+  isChapterUnlocked,
+  isDifficultyUnlocked,
+  luckOf,
   normalizeProfile,
-  padGain,
-  rebirthSkipPrice,
-  rollOutcome,
-  rollReach,
-  skipRebirth,
-  usePortal,
+  reachOf,
+  sellMultiplier,
+  startRun,
+  upgradeCost,
 } from '../../shared/logic.js'
 import { PlayerSession } from '../../shared/session.js'
-import { DROP_SPOT, PAD_X, padCenterZ, PORTALS, ROLL_ZONE, SPAWN, STAR } from '../../shared/world.js'
+import { SPAWN } from '../../shared/world.js'
 
-const onPad = (i) => ({ x: PAD_X, y: 0.5, z: padCenterZ(i) })
-const inRollZone = () => ({ x: 0, y: 0, z: (ROLL_ZONE.minZ + ROLL_ZONE.maxZ) / 2 })
+/** Noon on day 1000: the fake clock's start. */
+const T0 = 1000 * DAY_MS + DAY_MS / 2
+/** Eye height the session measures reach from. */
+const EYE = 1.6
 
-/** A session for a fresh profile, recording every event it emits. */
-function makeSession(pos, profile = createProfile('a', 'A')) {
-  const events = []
-  // No lucky gifts (rand): Wins stay exactly what the rules say.
-  const session = new PlayerSession(profile, { now: 0, rand: () => 0.99, emit: (type, payload) => events.push({ type, payload }), getPosition: () => pos })
-  return { session, profile, events, count: (type) => events.filter((e) => e.type === type).length }
+/**
+ * A session over a fake clock (`t.now`, moved by `t.advance`), recording every event it
+ * emits and every teleport it hands the host. `t.pos` is where the player stands.
+ */
+function makeSession({ profile = createProfile('p1', 'P'), rand = () => 0.5 } = {}) {
+  const t = { now: T0, pos: { x: 0, y: 0, z: 0 }, events: [], last: {}, teleports: [], profile }
+  t.session = new PlayerSession(profile, {
+    now: t.now,
+    rand,
+    emit: (type, payload) => {
+      t.events.push({ type, payload })
+      t.last[type] = payload
+    },
+    getPosition: () => t.pos,
+    onTeleport: (x, z) => {
+      t.teleports.push({ x, z })
+      Object.assign(t.pos, { x, y: 0, z })
+    },
+  })
+  t.advance = (ms) => (t.now += ms)
+  t.send = (type, payload = {}) => t.session.handle(type, payload, t.now)
+  t.of = (type) => t.events.filter((e) => e.type === type).map((e) => e.payload)
+  t.standAt = (x, z) => Object.assign(t.pos, { x, y: 0, z })
+  /** Stands as close to screw `i` as the room's walls allow. */
+  t.standBy = (i) => {
+    const s = screwPosition(t.session.layout, i)
+    const c = clampToRoom(t.session.layout, s.x, s.z)
+    t.standAt(c.x, c.z)
+  }
+  /** Walks up to screw `i`, waits a second (the tool's pace) and unscrews it. */
+  t.take = (i) => {
+    t.standBy(i)
+    t.advance(1000)
+    t.send('unscrew', { ids: [i] })
+    return t.last.unscrewed.ok.includes(i)
+  }
+  t.kinds = () => screwKinds(t.session.layout, t.profile.run.seed, luckOf(t.profile))
+  /** Screw indices still in the current room, of `kind` if given. */
+  t.screwsLeft = (kind) => {
+    const layout = t.session.layout
+    const out = decodeBits(t.profile.run.removed, layout.count)
+    const kinds = t.kinds()
+    const list = []
+    for (let i = 0; i < layout.count; i += 1) if (!getBit(out, i) && (kind === undefined || kinds[i] === kind)) list.push(i)
+    return list
+  }
+  return t
 }
 
-/** Trains on pad 0 until max level. */
-function maxOut(p) {
-  for (let i = 0; i < 1e5 && p.level < levelCap(p.rebirths); i += 1) applyTrain(p, 0, 0)
+const seedOf = (r) => 1 + Math.floor(r * (2 ** 31 - 2))
+
+/** A `rand` whose run seed hides at least one crystal screw in the Workshop's first room. */
+function randWithCrystal() {
+  const layout = getLayout(0, 0)
+  for (let k = 0; k < 1000; k += 1) {
+    const r = 0.5 + k / 10000
+    if (screwKinds(layout, seedOf(r)).includes(SCREW_CRYSTAL)) return () => r
+  }
+  throw new Error('no seed with a crystal screw')
 }
 
-// --- Formatting ------------------------------------------------------------------
+/** Distance from the player's eye to screw `i`. */
+const eyeDistance = (layout, pos, i) => {
+  const s = screwPosition(layout, i)
+  return Math.hypot(s.x - pos.x, s.y - (pos.y + EYE), s.z - pos.z)
+}
+
+/**
+ * Unscrews every screw left in the current room the honest way: walking to each, one
+ * a second, selling at the hopper whenever the bag is full. The clock (and the run's
+ * timer, through tick) moves on as it goes.
+ */
+function clearRoom(t) {
+  const layout = t.session.layout
+  const run = t.profile.run
+  const kinds = t.kinds()
+  for (const i of t.screwsLeft()) {
+    if (kinds[i] !== SCREW_CRYSTAL && run.bag >= bagCapacity(t.profile)) {
+      t.standAt(layout.sell.x, layout.sell.z)
+      t.send('sell')
+    }
+    t.session.tick(1, t.now + 1000)
+    assert.ok(t.take(i), `screw ${i} came out`)
+  }
+  assert.equal(run.left, 0)
+}
+
+const doorway = (layout) => clampToRoom(layout, layout.door.x, layout.door.z)
+
+// --- Profiles --------------------------------------------------------------------
+
+test('a profile survives a save round trip; a run always comes back paused', () => {
+  const p = createProfile('p1', 'P')
+  startRun(p, 'workshop', 0, T0, () => 0.25)
+  Object.assign(p, { crystals: 42, skin: 'ocean', tutorialStep: 2, lastSeen: T0 })
+  p.skins.push('ocean')
+  p.perks.luck = 2
+  p.cleared.workshop = 1
+  p.best['workshop:0'] = 321
+  p.passes.bagX2 = true
+  p.ads['free-crystals'] = T0 - 1000
+  p.daily = { day: 1000, index: 3 }
+  p.badges.push('firstScrew')
+  p.stats.screws = 999
+  Object.assign(p.run, { cash: 55, bag: 4, bagValue: 4, removed: 'Dw==', left: getLayout(0, 0).count - 4, time: 12.5, screws: 4 })
+  p.run.up.speed = 2
+
+  const back = normalizeProfile(JSON.parse(JSON.stringify(p)), 'p1', 'P')
+  assert.equal(back.run.active, false, 'resumed in the lobby, LOADed from the elevator')
+  assert.deepEqual(back, { ...p, run: { ...p.run, active: false } })
+  assert.deepEqual(normalizeProfile(null, 'p2', 'Q'), createProfile('p2', 'Q'))
+})
+
+test('normalize keeps only what makes sense', () => {
+  const p = normalizeProfile(
+    {
+      crystals: -5,
+      perks: { luck: 99, nope: 3 },
+      skins: ['nope'],
+      skin: 'gold',
+      cleared: { workshop: 9, mars: 1 },
+      best: { 'workshop:0': -1, x: 5 },
+      run: { chapter: 'mars' },
+      passes: { cashX2: true, fake: true },
+      stats: { screws: 'lots', rooms: 3 },
+      daily: 'x',
+      badges: ['firstScrew', 'nope'],
+    },
+    'p3',
+    'R',
+  )
+  assert.equal(p.crystals, 0)
+  assert.equal(p.perks.luck, PERKS.luck.costs.length, 'clamped to the max level')
+  assert.equal('nope' in p.perks, false)
+  assert.deepEqual(p.skins, ['classic'])
+  assert.equal(p.skin, 'classic', 'not owned, not worn')
+  assert.deepEqual(p.cleared, { workshop: DIFFICULTIES.length })
+  assert.deepEqual(p.best, {})
+  assert.equal(p.run, null, 'a run of an unknown chapter is dropped')
+  assert.deepEqual(p.passes, { cashX2: true })
+  assert.equal(p.stats.screws, 0)
+  assert.equal(p.stats.rooms, 3)
+  assert.deepEqual(p.daily, { day: -1, index: -1 })
+  assert.deepEqual(p.badges, ['firstScrew'])
+})
 
 test('numbers format like the HUD', () => {
-  assert.deepEqual(
-    [0, 999, 1000, 1234, 7300, 14000, 2.5e6, 9999].map(formatNumber),
-    ['0', '999', '1K', '1.2K', '7.3K', '14K', '2.5M', '9.9K'],
-  )
-  assert.equal(formatDistance(1050.7), '1,050 m')
+  assert.deepEqual([0, 999, 1000, 1234, 7300, 14000, 2.5e6].map(formatNumber), ['0', '999', '1K', '1.2K', '7.3K', '14K', '2.5M'])
 })
 
-// --- Levels and rebirth ----------------------------------------------------------
+// --- Unlocks -----------------------------------------------------------------------
 
-test('max level is 15 + 8 per rebirth; each rebirth adds x1 to gains', () => {
-  assert.deepEqual([0, 1, 2, 3].map(levelCap), [15, 23, 31, 39])
-  assert.deepEqual([0, 1, 2, 3].map(rebirthMultiplier), [1, 2, 3, 4])
+test('chapter 2 is locked until chapter 1 is cleared; Hard until Normal', () => {
+  const p = createProfile('p1', 'P')
+  assert.equal(isChapterUnlocked(p, 'workshop'), true)
+  assert.equal(isChapterUnlocked(p, 'boiler'), false)
+  assert.deepEqual(startRun(p, 'boiler', 0, T0), { ok: false, reason: 'locked' })
+  assert.deepEqual(startRun(p, 'workshop', 1, T0), { ok: false, reason: 'locked' })
+  assert.deepEqual(startRun(p, 'nowhere', 0, T0), { ok: false, reason: 'locked' })
+  assert.equal(p.run, null)
+  assert.deepEqual(startRun(p, 'workshop', 0, T0), { ok: true })
+  assert.equal(p.run.active, true)
+  assert.equal(p.run.left, getLayout(0, 0).count)
+  assert.equal(p.stats.runs, 1)
+
+  p.run = null
+  p.cleared.workshop = 1
+  assert.equal(startRun(p, 'boiler', 0, T0).ok, true)
+  assert.equal(startRun(p, 'workshop', 1, T0).ok, true, 'Hard opens after Normal')
+  assert.equal(startRun(p, 'workshop', 2, T0).ok, false, 'Impossible still needs Hard')
+  assert.equal(startRun(p, 'boiler', 1, T0).ok, false)
+  assert.equal(startRun(p, 'lab', 0, T0).ok, false, 'the Lab needs the Boiler Room')
+  assert.equal(isDifficultyUnlocked(p, 'workshop', 1), true)
 })
 
-test('each level needs more Health than the last', () => {
-  assert.equal(healthForLevel(1), 0)
-  for (let level = 2; level <= 60; level += 1) {
-    assert.ok(healthForLevel(level) > healthForLevel(level - 1), `level ${level}`)
+test('a locked run is refused by the session: no profile, no teleport', () => {
+  const t = makeSession()
+  t.send('startRun', { chapter: 'boiler', diff: 0 })
+  assert.equal(t.session.inRun, false)
+  assert.equal(t.teleports.length, 0)
+  assert.equal(t.of('profile').length, 0)
+})
+
+// --- Unscrewing --------------------------------------------------------------------
+
+test('a screw within reach comes out; one out of reach is refused', () => {
+  const t = makeSession()
+  t.send('startRun', { chapter: 'workshop', diff: 0 })
+  const layout = t.session.layout
+  const plain = t.screwsLeft(SCREW_PLAIN)
+  const byDistance = [...plain].sort((a, b) => eyeDistance(layout, t.pos, a) - eyeDistance(layout, t.pos, b))
+  const near = byDistance[0]
+  const far = byDistance.at(-1)
+  assert.ok(eyeDistance(layout, t.pos, far) > reachOf(t.profile) + REACH_SLACK, 'the far one really is out of reach')
+
+  t.advance(2000)
+  t.send('unscrew', { ids: [near, far] })
+  const r = t.last.unscrewed
+  assert.deepEqual(r.ok, [near])
+  assert.deepEqual(r.bad, [far], 'refused, so the client puts it back')
+  assert.equal(r.left, layout.count - 1)
+  assert.equal(r.bag, 1)
+  assert.equal(r.bagValue, layout.value * CHAPTERS[0].scale)
+  assert.equal(t.profile.stats.screws, 1)
+  assert.deepEqual(t.of('badge').map((b) => b.id), ['firstScrew'])
+
+  // Already out: neither taken again nor bounced back.
+  t.advance(2000)
+  t.send('unscrew', { ids: [near, -1, 1e9, 'x'] })
+  assert.deepEqual(t.last.unscrewed.ok, [])
+  assert.deepEqual(t.last.unscrewed.bad, [])
+  assert.equal(t.profile.run.left, layout.count - 1)
+})
+
+test('a full bag refuses screws, but crystal screws need no room in it', () => {
+  const t = makeSession({ rand: randWithCrystal() })
+  t.send('startRun', { chapter: 'workshop', diff: 0 })
+  const capacity = bagCapacity(t.profile)
+  assert.equal(capacity, BAG_LEVELS[0])
+  for (const i of t.screwsLeft(SCREW_PLAIN).slice(0, capacity)) assert.ok(t.take(i))
+  assert.equal(t.profile.run.bag, capacity)
+
+  const plain = t.screwsLeft(SCREW_PLAIN)[0]
+  assert.equal(t.take(plain), false)
+  assert.deepEqual(t.last.unscrewed.bad, [plain])
+
+  const crystal = t.screwsLeft(SCREW_CRYSTAL)[0]
+  assert.equal(t.take(crystal), true)
+  assert.equal(t.last.unscrewed.crystal, 1)
+  assert.equal(t.profile.crystals, 1)
+  assert.equal(t.profile.stats.crystal, 1)
+  assert.equal(t.profile.run.bag, capacity, 'the bag is no fuller')
+  assert.ok(t.of('badge').some((b) => b.id === 'crystal'))
+})
+
+test('a burst far faster than the tool allows is cut down to its rate', () => {
+  const t = makeSession()
+  t.send('startRun', { chapter: 'workshop', diff: 0 })
+  const layout = t.session.layout
+  t.standAt(0, 0)
+  // Floor screws: all within reach of the middle of the room.
+  const floor = t.screwsLeft().filter((i) => layout.surf[i] === 0)
+  for (const i of floor) assert.ok(eyeDistance(layout, t.pos, i) <= reachOf(t.profile) + REACH_SLACK)
+  const driver = TOOLS[0]
+  const burst = floor.slice(0, 15)
+
+  // Idle for a minute: the allowance is full, but only up to a couple of actions' worth.
+  t.advance(60_000)
+  t.send('unscrew', { ids: burst })
+  const cap = driver.max * 2 + 3
+  assert.equal(t.last.unscrewed.ok.length, cap)
+  assert.equal(t.last.unscrewed.bad.length, burst.length - cap)
+
+  // The same instant again: nothing left.
+  const rest = t.last.unscrewed.bad
+  t.send('unscrew', { ids: rest })
+  assert.equal(t.last.unscrewed.ok.length, 0)
+
+  // 1.25 s later: what the Screwdriver really does in that time (with the slack).
+  const rate = (driver.max / actionTime(t.profile, driver.id, t.now)) * RATE_SLACK
+  t.advance(1250)
+  t.send('unscrew', { ids: rest })
+  assert.equal(t.last.unscrewed.ok.length, Math.floor(1.25 * rate))
+  assert.equal(t.last.unscrewed.ok.length, 2)
+})
+
+// --- Selling, tools, upgrades ------------------------------------------------------
+
+test('the bag sells only at the hopper', () => {
+  const t = makeSession()
+  t.send('startRun', { chapter: 'workshop', diff: 0 })
+  const layout = t.session.layout
+  for (const i of t.screwsLeft(SCREW_PLAIN).slice(0, 5)) assert.ok(t.take(i))
+  const value = t.profile.run.bagValue
+  assert.equal(value, 5 * layout.value * CHAPTERS[0].scale)
+
+  const away = doorway(layout)
+  assert.equal(atHopper(layout, away.x, away.z, 1.4), false)
+  t.standAt(away.x, away.z)
+  t.send('sell')
+  assert.equal(t.of('sold').length, 0)
+  assert.equal(t.profile.run.bag, 5)
+
+  t.standAt(layout.sell.x, layout.sell.z)
+  t.send('sell')
+  assert.deepEqual(t.last.sold, { cash: value * sellMultiplier(t.profile), screws: 5 })
+  assert.equal(t.profile.run.cash, value)
+  assert.equal(t.profile.run.bag, 0)
+  assert.equal(t.profile.run.bagValue, 0)
+  assert.equal(t.profile.stats.sells, 1)
+
+  t.send('sell')
+  assert.equal(t.of('sold').length, 1, 'an empty bag sells for nothing')
+})
+
+test('tools and upgrades are paid for with the run\'s cash', () => {
+  const t = makeSession()
+  t.send('startRun', { chapter: 'workshop', diff: 0 })
+  const run = t.profile.run
+  t.send('buyTool', { id: 'drill' })
+  assert.deepEqual(run.tools, ['driver'], 'no cash, no drill')
+
+  run.cash = 100
+  const drill = TOOLS.find((x) => x.id === 'drill')
+  t.send('buyTool', { id: 'drill' })
+  assert.deepEqual(run.tools, ['driver', 'drill'])
+  assert.equal(run.tool, 'drill')
+  assert.equal(run.cash, 100 - drill.price * CHAPTERS[0].scale)
+  assert.ok(t.of('badge').some((b) => b.id === 'firstTool'))
+  t.send('buyTool', { id: 'drill' })
+  assert.equal(run.cash, 40, 'owned already: not sold twice')
+  assert.ok(actionTime(t.profile, 'drill', t.now) < actionTime(t.profile, 'driver', t.now))
+
+  const speedCost = upgradeCost(t.profile, 'speed')
+  const before = actionTime(t.profile, 'drill', t.now)
+  t.send('upgrade', { stat: 'speed' })
+  assert.equal(run.up.speed, 1)
+  assert.equal(run.cash, 40 - speedCost)
+  assert.ok(actionTime(t.profile, 'drill', t.now) < before)
+  assert.equal(t.profile.stats.upgrades, 1)
+
+  const bagCost = upgradeCost(t.profile, 'bag')
+  t.send('upgrade', { stat: 'bag' })
+  assert.equal(run.cash, 40 - speedCost - bagCost)
+  assert.equal(bagCapacity(t.profile), BAG_LEVELS[1])
+
+  t.send('upgrade', { stat: 'reach' })
+  assert.equal(run.up.reach, 0, 'too dear')
+  t.send('upgrade', { stat: 'nope' })
+  t.send('equipTool', { id: 'driver' })
+  assert.equal(run.tool, 'driver')
+  t.send('equipTool', { id: 'magnet' })
+  assert.equal(run.tool, 'driver', 'not owned')
+
+  // Run shopping is for runs only.
+  t.send('leaveRun')
+  run.cash = 1e6
+  t.send('buyTool', { id: 'ratchet' })
+  t.send('upgrade', { stat: 'speed' })
+  assert.deepEqual(run.tools, ['driver', 'drill'])
+  assert.equal(run.up.speed, 1)
+})
+
+// --- Doors and chapters ------------------------------------------------------------
+
+test('the exit door works only once the room is empty, and only from the doorway', () => {
+  const t = makeSession()
+  t.send('startRun', { chapter: 'workshop', diff: 0 })
+  const layout = t.session.layout
+  const door = doorway(layout)
+  assert.ok(atDoor(layout, door.x, door.z))
+
+  t.standAt(door.x, door.z)
+  t.send('nextRoom')
+  assert.equal(t.profile.run.room, 0, 'screws left: the door is shut')
+
+  clearRoom(t)
+  assert.equal(t.of('roomClear').length, 1)
+  t.standAt(0, 0)
+  t.send('nextRoom')
+  assert.equal(t.profile.run.room, 0, 'not at the door')
+
+  t.standAt(door.x, door.z)
+  t.send('nextRoom')
+  const next = getLayout(0, 1)
+  assert.deepEqual(t.last.room, { room: 1 })
+  assert.equal(t.profile.run.room, 1)
+  assert.equal(t.profile.run.left, next.count)
+  assert.equal(t.profile.run.removed, '')
+  assert.equal(t.profile.stats.rooms, 1)
+  assert.deepEqual(t.teleports.at(-1), { x: next.spawn.x, z: next.spawn.z }, 'the host is told about the jump')
+  assert.deepEqual(t.last.teleport, { x: next.spawn.x, y: 0, z: next.spawn.z, yaw: next.spawn.yaw })
+  assert.equal(t.session.layout, next)
+})
+
+test('clearing the last room clears the chapter: Crystals, a best time, unlocks, back to the lobby', () => {
+  const t = makeSession()
+  t.send('startRun', { chapter: 'workshop', diff: 0 })
+  const rooms = CHAPTERS[0].rooms.length
+  let crystalsBefore = 0
+  let time = 0
+  for (let room = 0; room < rooms; room += 1) {
+    clearRoom(t)
+    const door = doorway(t.session.layout)
+    t.standAt(door.x, door.z)
+    crystalsBefore = t.profile.crystals
+    time = Math.round(t.profile.run.time)
+    t.send('nextRoom')
   }
-  assert.equal(levelFor(0, 0), 1)
-  assert.equal(levelFor(healthForLevel(15) - 1, 0), 14)
-  assert.equal(levelFor(1e12, 0), 15, 'never past the cap')
-  assert.equal(levelFor(1e12, 1), 23)
+  const clear = t.last.chapterClear
+  const reward = Math.round(CHAPTERS[0].reward * DIFFICULTIES[0].crystals)
+  assert.equal(clear.chapter, 'workshop')
+  assert.equal(clear.diff, 0)
+  assert.equal(clear.crystals, reward)
+  assert.equal(clear.time, time)
+  assert.ok(time > 0)
+  assert.equal(clear.best, time)
+  assert.equal(clear.newBest, true)
+  assert.equal(clear.unlockedDifficulty, DIFFICULTIES[1].name)
+  assert.equal(clear.unlockedChapter, CHAPTERS[1].name)
+  assert.equal(t.profile.crystals, crystalsBefore + reward)
+  assert.equal(t.profile.best['workshop:0'], time)
+  assert.equal(t.profile.cleared.workshop, 1)
+  assert.equal(t.profile.stats.chapters, 1)
+  assert.equal(t.profile.stats.rooms, rooms)
+  assert.equal(t.profile.run, null, 'the run is over')
+  assert.equal(t.session.inRun, false)
+  assert.deepEqual(t.teleports.at(-1), { x: SPAWN.x, z: SPAWN.z })
+  assert.ok(t.of('badge').some((b) => b.id === 'workshop'))
+  assert.equal(isChapterUnlocked(t.profile, 'boiler'), true)
+  assert.equal(isDifficultyUnlocked(t.profile, 'workshop', 1), true)
 })
 
-test('the first pad gives the tire power per step and stops at max level', () => {
-  const p = createProfile('a', 'A')
-  for (let i = 0; i < 10; i += 1) applyTrain(p, 0, 0)
-  assert.equal(p.health, 10)
-  maxOut(p)
-  assert.equal(p.health, healthForLevel(15))
-  assert.equal(p.level, 15)
-  assert.equal(applyTrain(p, 0, 0).gain, 0, 'no more natural gains at max level')
-  assert.equal(p.health, healthForLevel(15))
-})
-
-test('locked pads give nothing', () => {
-  const p = createProfile('a', 'A')
-  assert.equal(applyTrain(p, 1, 0).ok, false)
-  assert.equal(p.health, 0)
-})
-
-test('better tires add power, rebirths multiply it', () => {
-  const p = createProfile('a', 'A')
-  p.ownedTires.push('mountain')
-  p.equippedTire = 'mountain'
-  applyTrain(p, 0, 0)
-  assert.equal(p.health, TIRES[1].power)
-  p.rebirths = 1
-  p.health = 0
-  p.level = 1
-  applyTrain(p, 0, 0)
-  assert.equal(p.health, TIRES[1].power * 2)
-  applyTrain(p, 1, 0)
-  assert.equal(p.health, TIRES[1].power * 2 + TIRES[1].power * 2 * 2, 'Speed Pad is x2 on top')
-})
-
-test('rebirth needs max level, resets Health, keeps Wins and tires', () => {
-  const p = createProfile('a', 'A')
-  assert.equal(applyRebirth(p).ok, false)
-  maxOut(p)
-  p.wins = 50
-  p.ownedTires.push('mountain')
-  assert.equal(applyRebirth(p).ok, true)
-  assert.equal(p.rebirths, 1)
-  assert.equal(p.health, 0)
-  assert.equal(p.level, 1)
-  assert.equal(p.wins, 50)
-  assert.deepEqual(p.ownedTires, ['bicycle', 'mountain'])
-})
-
-test('skipping to a rebirth costs Wins', () => {
-  const p = createProfile('a', 'A')
-  const price = rebirthSkipPrice(p)
-  p.wins = price - 1
-  assert.equal(skipRebirth(p).ok, false)
-  assert.equal(p.rebirths, 0)
-  p.wins = price + 5
-  assert.equal(skipRebirth(p).ok, true)
-  assert.equal(p.rebirths, 1)
-  assert.equal(p.wins, 5)
-  assert.equal(p.health, 0)
-})
-
-// --- Dropping --------------------------------------------------------------------
-
-test('nothing blocks a drop: it always smashes its full reach', () => {
-  for (const health of [0, ZONES[1].wall - 1, ZONES[1].wall, ZONES[20].wall * 3]) {
-    const outcome = rollOutcome(health)
-    assert.equal(outcome.blocked, -1)
-    assert.equal(outcome.distance, rollReach(health))
+test('a slower clear keeps the best time; Hard pays more and opens Impossible', () => {
+  const p = createProfile('p1', 'P')
+  p.cleared.workshop = 1
+  p.best['workshop:0'] = 100
+  const finish = (diff, time) => {
+    startRun(p, 'workshop', diff, T0)
+    Object.assign(p.run, { room: CHAPTERS[0].rooms.length - 1, left: 0, time })
+    return advanceRoom(p, T0)
   }
-  assert.equal(rollOutcome(ZONES[1].wall - 1).broken, 1, 'past the first floor without its pace Skill')
+  const slow = finish(0, 150)
+  assert.equal(slow.best, 100)
+  assert.equal(slow.newBest, false)
+  assert.equal(slow.unlockedDifficulty, null, 'nothing new')
+  assert.equal(slow.unlockedChapter, null)
+  assert.equal(p.best['workshop:0'], 100)
+
+  const hard = finish(1, 90)
+  assert.equal(hard.crystals, Math.round(CHAPTERS[0].reward * DIFFICULTIES[1].crystals))
+  assert.equal(hard.unlockedDifficulty, DIFFICULTIES[2].name)
+  assert.equal(p.best['workshop:1'], 90)
+  assert.equal(p.cleared.workshop, 2)
+  assert.equal(advanceRoom(p, T0).ok, false, 'no run, no door')
 })
 
-test('every drop falls to the glass roof and smashes into the first floor', () => {
-  assert.equal(ZONES[0].start, DROP_ROOF)
-  // Even the weakest throw with no Skill gets through the roof.
-  const p = createProfile('a', 'A')
-  const weakest = applyRoll(p, 0, 0)
-  assert.ok(weakest.distance > DROP_ROOF, `got ${weakest.distance}`)
-})
+// --- Leaving and loading -----------------------------------------------------------
 
-test('Wins grow with distance', () => {
-  let last = -1
-  for (let m = 0; m <= 16000; m += 250) {
-    const wins = baseRollWins(m)
-    assert.ok(wins >= last, `${m} yd pays at least as much as ${m - 250} yd`)
-    last = wins
-  }
-})
+test('leaving keeps the run saved and LOAD goes back into it, both teleporting through onTeleport', () => {
+  const t = makeSession()
+  t.send('startRun', { chapter: 'workshop', diff: 0 })
+  const layout = t.session.layout
+  assert.equal(t.session.inRun, true)
+  assert.deepEqual(t.teleports, [{ x: layout.spawn.x, z: layout.spawn.z }])
+  assert.deepEqual(t.last.teleport, { x: layout.spawn.x, y: 0, z: layout.spawn.z, yaw: layout.spawn.yaw })
+  const taken = t.screwsLeft(SCREW_PLAIN)[0]
+  assert.ok(t.take(taken))
 
-test('rolls pay Wins without using Health; a zone prize pays only once', () => {
-  const p = createProfile('a', 'A')
-  p.health = ZONES[1].wall
-  const first = applyRoll(p, 0)
-  assert.equal(p.health, ZONES[1].wall)
-  assert.deepEqual(first.discovered, [1])
-  assert.equal(first.prize, ZONES[1].discover)
-  assert.equal(first.best, true)
-  assert.equal(p.wins, first.wins + first.prize)
-  const second = applyRoll(p, 0)
-  assert.equal(second.prize, 0)
-  assert.deepEqual(second.discovered, [])
-  assert.equal(second.best, false)
-  assert.equal(p.stats.totalWins, first.wins + first.prize + second.wins)
-  assert.equal(p.stats.rolls, 2)
-})
+  t.send('leaveRun')
+  assert.equal(t.session.inRun, false)
+  assert.equal(t.session.layout, null)
+  assert.deepEqual(t.teleports.at(-1), { x: SPAWN.x, z: SPAWN.z })
+  assert.equal(t.last.teleport.yaw, Math.PI)
+  assert.equal(t.profile.run.active, false, 'saved, not ended')
+  assert.equal(t.profile.run.left, layout.count - 1)
+  t.send('unscrew', { ids: [0] })
+  assert.equal(t.of('unscrewed').length, 1, 'no unscrewing from the lobby')
+  t.send('leaveRun')
+  assert.equal(t.teleports.length, 2, 'already out')
 
-test('the throw meter decides how deep it smashes: depth and Wins', () => {
-  const kick = (accuracy) => {
-    const p = createProfile('a', 'A')
-    p.health = ZONES[3].wall
-    p.stats.bestZone = ZONES.length - 1
-    return applyRoll(p, 0, accuracy)
-  }
-  const auto = kick(null)
-  const weak = kick(0.1)
-  const good = kick(0.5)
-  const great = kick(0.8)
-  const perfect = kick(1)
-  assert.equal(auto.hit, null)
-  assert.deepEqual([weak.hit, good.hit, great.hit, perfect.hit], ['weak', 'good', 'great', 'perfect'])
-  // Further the closer to the middle; Auto Kick flies Power's distance exactly.
-  assert.equal(auto.distance, Math.round(rollReach(ZONES[3].wall) * 10) / 10)
-  assert.ok(weak.distance < good.distance && good.distance < great.distance && great.distance < perfect.distance)
-  // Every grade clearly apart from the next: at least a fifth deeper under the roof each
-  // step up (the fall to the roof is the same for every throw).
-  const below = (r) => r.distance - DROP_ROOF
-  assert.ok(below(good) > below(weak) * 1.2 && below(great) > below(good) * 1.2 && below(perfect) > below(great) * 1.15)
-  assert.ok(below(perfect) > below(auto) * 1.35 && below(weak) < below(auto) * 0.65)
-  // Wins: the Power's worth times the grade's bonus, whatever extra yards the grade adds.
-  assert.equal(good.wins, auto.wins)
-  assert.ok(weak.wins < auto.wins && great.wins > auto.wins)
-  assert.ok(Math.abs(perfect.wins - auto.wins * 1.6) <= 1)
-  // Out-of-range accuracy is clamped, not trusted.
-  assert.equal(kick(7).distance, perfect.distance)
-})
+  // Through a save and a new session, as after a reconnect elsewhere.
+  const saved = normalizeProfile(JSON.parse(JSON.stringify(t.profile)), 'p1', 'P')
+  const u = makeSession({ profile: saved })
+  assert.equal(u.session.inRun, false)
+  u.send('loadRun')
+  assert.equal(u.session.inRun, true)
+  assert.deepEqual(u.teleports, [{ x: layout.spawn.x, z: layout.spawn.z }])
+  assert.equal(u.profile.run.left, layout.count - 1)
+  assert.equal(u.screwsLeft().includes(taken), false, 'the screw taken is still out')
+  u.send('loadRun')
+  assert.equal(u.teleports.length, 1, 'in it already')
 
-test('the very first roll pays for the second tire, as the guide asks', () => {
-  const p = createProfile('a', 'A')
-  const r = applyRoll(p, 0)
-  assert.ok(r.wins >= TIRES[1].cost)
-})
-
-// --- Buying ----------------------------------------------------------------------
-
-test('tires are bought in order with Wins', () => {
-  const p = createProfile('a', 'A')
-  p.wins = 1000
-  assert.equal(buyTire(p, TIRES[3].id).ok, false, 'skipping ahead')
-  assert.equal(buyTire(p, TIRES[1].id).ok, true)
-  assert.equal(p.wins, 1000 - TIRES[1].cost)
-  assert.equal(p.equippedTire, TIRES[1].id)
-  assert.equal(buyTire(p, TIRES[2].id).ok, true)
-  assert.equal(buyTire(p, 'nope').ok, false)
-  p.wins = 0
-  assert.equal(buyTire(p, TIRES[3].id).ok, false, 'not enough Wins')
-})
-
-test('Health packs follow your level and ignore the cap', () => {
-  const p = createProfile('a', 'A')
-  const early = healthPacks(p)
-  p.health = healthForLevel(10)
-  p.level = levelFor(p.health, 0)
-  const later = healthPacks(p)
-  assert.ok(later[0].amount > early[0].amount)
-  assert.ok(later[2].amount > later[0].amount)
-  p.wins = later[2].price - 1
-  assert.equal(buyHealthPack(p, 2).ok, false)
-  p.wins = later[2].price
-  const before = p.health
-  assert.equal(buyHealthPack(p, 2).ok, true)
-  assert.equal(p.health, before + later[2].amount)
-  assert.equal(p.wins, 0)
-  // Past the cap with packs: Health keeps climbing, the level stops at max.
-  p.health = healthForLevel(15)
-  p.level = 15
-  p.wins = 1e9
-  buyHealthPack(p, 0)
-  assert.ok(p.health > healthForLevel(15))
-  assert.equal(p.level, 15)
-})
-
-// --- Boxity products -------------------------------------------------------------
-
-test('Gems products grant passes, and an owned pass turns into Wins', () => {
-  const p = createProfile('a', 'A')
-  const first = applyGemProduct(p, 'health_x2')
-  assert.equal(first.ok, true)
-  assert.equal(p.passes.healthX2, true)
-  assert.equal(p.wins, 0)
-  const again = applyGemProduct(p, 'health_x2')
-  assert.ok(again.wins >= 10)
-  assert.equal(p.wins, again.wins)
-  assert.equal(p.stats.totalWins, again.wins)
-  applyGemProduct(p, 'auto_roll')
-  assert.equal(p.settings.autoRoll, true)
-  applyGemProduct(p, 'potion_bundle')
-  assert.deepEqual(p.items, { potionHealth: 3, potionWins: 3 })
-  assert.equal(applyGemProduct(p, 'nope').ok, false)
-  for (const sku of Object.keys(GEM_PRODUCTS)) assert.equal(applyGemProduct(createProfile('b', 'B'), sku).ok, true, sku)
-})
-
-test('ad rewards have a cooldown per placement', () => {
-  const p = createProfile('a', 'A')
-  const s = createSession(0)
-  const [placement] = Object.keys(AD_REWARDS)
-  const t0 = 1_000_000
-  assert.equal(applyAdReward(p, s, placement, t0).ok, true)
-  assert.equal(p.items.potionHealth, 1)
-  assert.equal(applyAdReward(p, s, placement, t0 + 1000).ok, false)
-  assert.equal(applyAdReward(p, s, placement, t0 + AD_REWARDS[placement].cooldownMs).ok, true)
-  assert.equal(applyAdReward(p, s, 'nope', t0).ok, false)
-})
-
-// --- Saves -----------------------------------------------------------------------
-
-test('old or corrupt saves load with defaults filled in', () => {
-  const p = normalizeProfile(
-    { health: 'x', wins: -5, pets: [{ uid: 1, id: 'nope' }], equippedPets: [1], ownedTires: ['nope'], equippedTire: 'nope', stats: { rolls: 3 } },
-    'x',
-    'X',
-  )
-  assert.equal(p.health, 0)
-  assert.equal(p.wins, 0)
-  assert.deepEqual(p.pets, [])
-  assert.deepEqual(p.equippedPets, [])
-  assert.deepEqual(p.ownedTires, ['bicycle'])
-  assert.equal(p.equippedTire, 'bicycle')
-  assert.equal(p.stats.rolls, 3)
-  assert.equal(p.stats.bestDistance, 0)
-  assert.deepEqual(p.settings, { autoRebirth: false, autoRoll: false })
-  assert.deepEqual(normalizeProfile(null, 'y', 'Y'), createProfile('y', 'Y'))
-  assert.equal(normalizeProfile({ health: healthForLevel(5) }, 'z', 'Z').level, 5, 'level recomputed from Health')
-})
-
-test('only brand-new players get the tutorial', () => {
-  assert.equal(normalizeProfile({ rebirths: 0, tutorialStep: 1 }, 'a', 'A').tutorialStep, 1)
-  assert.equal(normalizeProfile({ rebirths: 1, tutorialStep: 1 }, 'b', 'B').tutorialStep, TUTORIAL.length)
-})
-
-// --- The session -----------------------------------------------------------------
-
-test('Skill comes only from throws: never from standing, walking or a pad by itself', () => {
-  const pos = onPad(0)
-  const { session, profile, count } = makeSession(pos)
-  session.handle('enterPad', { pad: 0 }, 0)
-  for (let t = 0; t < 20000; t += 100) {
-    pos.x = PAD_X + Math.sin(t / 700) * 30
-    session.tick(0.1, t)
-  }
-  assert.equal(profile.health, 0, 'walking about and standing on a pad earn nothing')
-  assert.equal(count('train'), 0)
-})
-
-test('each throw pays: the pad bonus only on the pad you really stand on, at most one per cooldown', () => {
-  const pos = { x: SPAWN.x, y: 0, z: SPAWN.z }
-  const { session, profile, events } = makeSession(pos)
-  session.handle('toss', {}, 1000)
-  const off = events.filter((e) => e.type === 'train')
-  assert.equal(off.length, 1)
-  assert.equal(off[0].payload.source, 'throw')
-  assert.ok(profile.health > 0)
-  session.handle('toss', {}, 1000 + TOSS_COOLDOWN * 500)
-  assert.equal(events.filter((e) => e.type === 'train').length, 1, 'too soon after the last throw')
-  // Claiming a pad from spawn pays no pad bonus.
-  session.handle('enterPad', { pad: 0 }, 2000)
-  session.handle('toss', {}, 3000)
-  assert.equal(events.at(-1).payload.source, 'throw', 'claimed a pad from spawn')
-  Object.assign(pos, onPad(0))
-  session.handle('toss', {}, 4000)
-  assert.equal(events.at(-1).payload.source, 'pad')
-  assert.equal(events.at(-1).payload.pad, 0)
-  session.handle('enterPad', { pad: 1 }, 5000)
-  assert.equal(session.pad, 0, 'a locked pad cannot be entered')
-})
-
-test('the first guide step completes once throws bring Skill to 30', () => {
-  assert.equal(TUTORIAL[0].event, 'train')
-  assert.equal(TUTORIAL[0].health, 30)
-  const pos = onPad(0)
-  const { session, profile } = makeSession(pos)
-  session.handle('enterPad', { pad: 0 }, 0)
-  let t = 0
-  while (profile.health < 29) session.handle('toss', {}, (t += 1000))
-  assert.equal(profile.tutorialStep, 0)
-  while (profile.health < 30) session.handle('toss', {}, (t += 1000))
-  assert.equal(profile.tutorialStep, 1)
-})
-
-test('drops start only from the drop zone, one at a time', () => {
-  const pos = { x: SPAWN.x, y: 0, z: SPAWN.z }
-  const { session, profile, count } = makeSession(pos)
-  session.handle('roll', {}, 1000)
-  assert.equal(count('roll'), 0, 'not from spawn')
-  Object.assign(pos, inRollZone())
-  session.handle('roll', {}, 1000)
-  assert.equal(count('roll'), 1)
-  session.handle('roll', {}, 1500)
-  assert.equal(count('roll'), 1, 'no second roll while the tire is out')
-  // No Skill while the phone falls, and no throwing either.
-  for (let t = 1100; t < 4000; t += 100) session.tick(0.1, t)
-  session.handle('toss', {}, 2000)
-  assert.equal(profile.health, 0, `got ${profile.health}`)
-  session.handle('roll', {}, 1000 + session.busyUntil)
-  assert.equal(count('roll'), 2, 'rolls again once the cooldown is over')
-  assert.equal(profile.stats.rolls, 2)
-})
-
-test('ads and Gems are granted by the host only, never by a client message', () => {
-  const { session, profile, count } = makeSession(inRollZone())
-  session.handle('grantAdReward', { placement: 'health-potion' }, 0)
-  session.handle('grantGemProduct', { sku: 'wins_big' }, 0)
-  session.handle('adReward', { placement: 'health-potion' }, 0)
-  assert.equal(profile.wins, 0)
-  assert.deepEqual(profile.items, {})
-  assert.equal(session.grantAdReward('health-potion', 1e6).ok, true)
-  assert.equal(profile.items.potionHealth, 1)
-  assert.equal(session.grantGemProduct('wins_big').ok, true)
-  assert.ok(profile.wins > 0)
-  assert.equal(count('reward'), 2)
-})
-
-// --- Rebirth gifts ---------------------------------------------------------------
-
-/** Straight to max level (training there takes too long this late). */
-function toCap(p) {
-  p.level = levelCap(p.rebirths)
-  p.health = healthForLevel(p.level)
-}
-
-test('every 5th rebirth from 15 gives Volcano eggs', () => {
-  assert.equal(rebirthGift(14), null)
-  assert.equal(rebirthGift(16), null)
-  assert.deepEqual([15, 20, 25, 35, 100].map((r) => rebirthGift(r).amount), [3, 3, 4, 5, 6])
-  assert.equal(nextRebirthGift(0).rebirths, 15)
-  assert.equal(nextRebirthGift(15).rebirths, 20)
-  assert.equal(nextRebirthGift(19).rebirths, 20)
-
-  const p = createProfile('a', 'A')
-  p.rebirths = 14
-  toCap(p)
-  const result = applyRebirth(p)
-  assert.equal(result.gift.rebirths, 15)
-  assert.equal(p.items.eggVolcano, 3)
-  toCap(p)
-  assert.equal(applyRebirth(p).gift, null, 'nothing at rebirth 16')
-  assert.equal(p.items.eggVolcano, 3)
-})
-
-test('a rebirth gift is announced to the player', () => {
-  const { session, profile, events } = makeSession(SPAWN)
-  profile.rebirths = 19
-  toCap(profile)
-  session.handle('rebirth', {}, 0)
-  const reward = events.find((e) => e.type === 'reward')
-  assert.match(reward.payload.label, /REBIRTH 20 GIFT: 3 Volcano Eggs/)
-})
-
-// --- World 2 ---------------------------------------------------------------------
-
-test('World 2 has its own sixty stages at the same gates, paying more', () => {
-  const [w1, w2] = WORLD_ZONES
-  assert.equal(w2.length, w1.length)
-  assert.equal(new Set(w2.map((z) => z.id)).size, w2.length, 'unique ids')
-  assert.ok(w2.every((z) => !w1.some((o) => o.name === z.name)), 'new names')
-  for (let i = 0; i < w1.length; i += 1) {
-    assert.equal(w2[i].start, w1[i].start)
-    assert.equal(w2[i].wall, w1[i].wall)
-    assert.equal(w2[i].discover, w1[i].discover * WORLDS[1].wins)
-  }
-})
-
-test('the portal opens at enough rebirths and Wins, without spending them, and goes both ways', () => {
-  const p = createProfile('a', 'A')
-  assert.equal(usePortal(p).ok, false)
-  assert.equal(p.world, 0)
-  p.wins = WORLD_PORTALS.world2.wins
-  assert.equal(usePortal(p).ok, false, 'Wins alone are not enough')
-  p.rebirths = WORLD_PORTALS.world2.rebirths
-  p.wins = WORLD_PORTALS.world2.wins - 1
-  assert.equal(usePortal(p).ok, false, 'rebirths alone are not enough')
-  p.wins = WORLD_PORTALS.world2.wins
-  assert.deepEqual(usePortal(p), { ok: true, world: 1, first: true })
-  assert.equal(p.wins, WORLD_PORTALS.world2.wins, 'Wins kept')
-  assert.equal(usePortal(p).world, 0, 'back home')
-  p.wins = 0
-  assert.equal(usePortal(p).world, 1, 'open for good once unlocked')
-  const saved = normalizeProfile(JSON.parse(JSON.stringify(p)), 'a', 'A')
-  assert.equal(saved.world, 1)
-  assert.equal(saved.world2Unlocked, true)
-  assert.equal(normalizeProfile({ ...p, world2Unlocked: false }, 'a', 'A').world, 0, 'no World 2 without the unlock')
-})
-
-test('a roll in World 2 pays its multiplier and its own first-visit prizes', () => {
-  const one = createProfile('a', 'A')
-  const two = createProfile('b', 'B')
-  one.health = two.health = 5000
-  two.world = 1
-  two.world2Unlocked = true
-  const a = applyRoll(one, 0)
-  const b = applyRoll(two, 0)
-  assert.equal(b.distance, a.distance, 'same gates, same distance')
-  assert.ok(Math.abs(b.wins - a.wins * WORLDS[1].wins) <= WORLDS[1].wins, `${b.wins} vs ${a.wins}`)
-  assert.equal(b.prize, a.prize * WORLDS[1].wins)
-  assert.equal(two.stats.bestZone, 0, "World 1's discoveries untouched")
-  assert.ok(two.stats.bestZone2 > 0)
-})
-
-test('stepping into the portal switches world and tells the client', () => {
-  const portal = PORTALS[0]
-  const { session, profile, events } = makeSession({ x: portal.x, y: 0, z: portal.z })
-  session.handle('portal', {}, 0)
-  assert.equal(profile.world, 0, 'not enough Wins yet')
-  profile.wins = WORLD_PORTALS.world2.wins
-  profile.rebirths = WORLD_PORTALS.world2.rebirths
-  session.handle('portal', {}, 0)
-  assert.equal(profile.world, 1)
-  assert.deepEqual(events.find((e) => e.type === 'world').payload, { world: 1, first: true })
-  session.handle('portal', {}, 0)
-  assert.equal(profile.world, 0)
-})
-
-// --- Palm Beach ------------------------------------------------------------------
-
-test("Palm Beach's treadmills and Beach Egg work there only", () => {
-  const p = createProfile('a', 'A')
-  const surf = PADS.findIndex((pad) => pad.id === 'surf')
-  const tsunami = PADS.findIndex((pad) => pad.id === 'tsunami')
-  p.rebirths = 20
-  p.wins = 1e9
-  assert.equal(isPadUnlocked(p, surf), false, 'not in World 1, whatever your rebirths')
-  assert.equal(hatchEgg(p, 'beach', 1).ok, false)
-  assert.equal(p.wins, 1e9, 'nothing charged for an egg that cannot hatch here')
-  p.world2Unlocked = true
-  p.world = 1
-  assert.equal(isPadUnlocked(p, surf), true)
-  assert.equal(isPadUnlocked(p, tsunami), true)
-  p.rebirths = 9
-  assert.equal(isPadUnlocked(p, surf), false, 'and it still needs its rebirths')
-  assert.equal(isPadUnlocked(p, 0), true, "World 1's treadmills work there too")
-  const res = hatchEgg(p, 'beach', 1)
-  assert.equal(res.ok, true)
-  assert.ok(['seagull', 'dolphin', 'shark', 'kraken'].includes(res.pets[0].id))
-  // Better pets than the Volcano Egg - the next step up - and its rarest is the best of all.
-  const avg = (id) => EGGS[id].pets.reduce((sum, [pet, w]) => sum + PETS[pet].mult * w, 0) / 100
-  assert.ok(avg('beach') > avg('volcano') * 1.3)
-  const eggPets = Object.values(EGGS).flatMap((egg) => egg.pets.map(([pet]) => pet)).filter((pet) => pet !== 'kraken')
-  assert.ok(eggPets.every((pet) => PETS[pet].mult < PETS.kraken.mult))
-})
-
-test("Palm Beach's Secret Star: found once, there only, for x2 Power everywhere", () => {
-  const atStar = { x: STAR.x, y: 0, z: STAR.z }
-  const { session, profile, count } = makeSession(atStar)
-  session.handle('findStar', {}, 0)
-  assert.equal(count('star'), 0, 'not in World 1')
-  profile.world2Unlocked = true
-  profile.world = 1
-  const before = padGain(profile, 0, 0)
-  session.handle('findStar', {}, 0)
-  assert.equal(count('star'), 1)
-  assert.equal(padGain(profile, 0, 0), before * 2)
-  session.handle('findStar', {}, 0)
-  assert.equal(count('star'), 1, 'once only')
-  profile.world = 0
-  assert.equal(padGain(profile, 0, 0), before * 2, 'and it keeps working back home')
-  assert.equal(normalizeProfile(JSON.parse(JSON.stringify(profile)), 'a', 'A').secretStars.world2, true, 'saved')
-  // Far from it, nothing.
-  const far = makeSession({ x: 0, y: 0, z: 0 })
-  far.profile.world2Unlocked = true
-  far.profile.world = 1
-  far.session.handle('findStar', {}, 0)
-  assert.equal(far.count('star'), 0)
-})
-
-// --- The drop zone ---------------------------------------------------------------
-
-test('throwing from the edge pays the same as anywhere in the drop zone: no stretch bonus', () => {
-  const dropFrom = (pos) => {
-    const profile = createProfile('a', 'A')
-    profile.health = 5000
-    const { session, events } = makeSession(pos, profile)
-    session.handle('roll', { accuracy: 0.5 }, 1000)
-    return events.find((e) => e.type === 'roll')?.payload
-  }
-  const edge = dropFrom({ x: DROP_SPOT.x, y: 0, z: DROP_SPOT.z })
-  const back = dropFrom(inRollZone())
-  assert.ok(edge && back)
-  assert.equal(edge.distance, back.distance)
-  assert.equal(edge.wins, back.wins)
-  assert.equal(edge.stretch, undefined)
+  const fresh = makeSession()
+  fresh.send('loadRun')
+  assert.equal(fresh.session.inRun, false, 'nothing saved to load')
+  assert.equal(fresh.teleports.length, 0)
 })

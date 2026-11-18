@@ -1,70 +1,46 @@
-import { MAX_EQUIPPED_PETS } from '@shared/balance'
-import { questsReady } from '@shared/engage'
-import { rebirthProgress } from '@shared/logic'
+import { PERK_IDS, SKINS } from '@shared/balance'
+import { questsReady, questDone } from '@shared/engage'
+import { perkCost } from '@shared/logic'
 
+import { prefetchStage } from '../../game/stageLoader'
 import { useGame } from '../../store/game'
 import Icon from '../Icon'
-import GiftTile from './GiftTile'
 import StrokeText from '../StrokeText'
 import { AlertBadge, ChunkyButton } from './parts'
-import { u } from './style'
+import { GRADIENTS, u } from './style'
 
-/** Each tile's face colour. */
-const TILE_GRADIENTS = {
-  pets: 'linear-gradient(180deg, #ffd99a 0%, #ffa53a 50%, #f07a12 100%)',
-  rebirth: 'linear-gradient(180deg, #b4efff 0%, #4cb8ff 50%, #2477e8 100%)',
-  items: 'linear-gradient(180deg, #ffb8c6 0%, #ff5f86 50%, #d92b5a 100%)',
-  store: 'linear-gradient(180deg, #c9ff96 0%, #6fe04a 50%, #26ad3c 100%)',
-  quest: 'linear-gradient(180deg, #e2c4ff 0%, #a46bff 50%, #6a2fd6 100%)',
-}
-
-function MenuTile({ icon, label, onClick, alert, top }) {
+function Tile({ icon, label, gradient, onClick, alert, onPointerEnter }) {
   return (
-    <ChunkyButton gradient={TILE_GRADIENTS[icon]} onClick={onClick} title={label} radius={20} className="flex-col" style={{ width: u(112), height: u(112) }}>
-      <Icon name={icon} size={u(84)} style={{ marginTop: u(-10) }} />
-      <span className="absolute" style={{ bottom: u(-14), fontSize: u(32) }}>
+    <div className="relative flex flex-col items-center" onPointerEnter={onPointerEnter}>
+      <ChunkyButton gradient={gradient} onClick={onClick} title={label} radius={22} style={{ width: u(112), height: u(112) }}>
+        <Icon name={icon} size={u(72)} />
+      </ChunkyButton>
+      {alert && <AlertBadge size={34} style={{ top: u(-10), right: u(-8) }} />}
+      <span style={{ fontSize: u(30), marginTop: u(4) }}>
         <StrokeText stroke={u(7)}>{label}</StrokeText>
       </span>
-      {top && (
-        <span className="absolute" style={{ top: u(-22), fontSize: u(30) }}>
-          <StrokeText stroke={u(7)} className="italic">
-            {top}
-          </StrokeText>
-        </span>
-      )}
-      {alert && <AlertBadge size={40} style={{ top: u(-12), right: u(-14) }} />}
-    </ChunkyButton>
+    </div>
   )
 }
 
 /**
- * The menu on the left, under the stats: Rebirth (with % to next), Pets, Items, Store,
- * today's Quests (a badge while one's ready to claim) and the free Gift.
+ * The lobby's menu tiles down the left: PLAY (the chapters - or step on a play pad),
+ * Perks, Skins, Quests, Stats and the Shop. A red "!" where something's waiting.
  */
 export function LeftMenu() {
-  const togglePanel = useGame((s) => s.togglePanel)
-  const rebirthPct = useGame((s) => Math.floor(rebirthProgress(s.profile) * 100))
-  const petAlert = useGame((s) => s.profile.equippedPets.length < Math.min(MAX_EQUIPPED_PETS, s.profile.pets.length))
-  const itemAlert = useGame((s) => Object.values(s.profile.items).some((n) => n > 0))
-  const questAlert = useGame((s) => questsReady(s.profile, Date.now()))
+  const openPanel = useGame((s) => s.openPanel)
+  const perkReady = useGame((s) => PERK_IDS.some((id) => perkCost(s.profile, id) <= s.profile.crystals))
+  const skinReady = useGame((s) => SKINS.some((skin) => !s.profile.skins.includes(skin.id) && skin.price <= s.profile.crystals))
+  const questReady = useGame((s) => Boolean(s.profile.quests && (s.profile.quests.list.some((q) => questDone(q) && !q.claimed) || questsReady(s.profile))))
 
   return (
-    <div
-      className="hud-menu pointer-events-none absolute grid grid-cols-2"
-      style={{ gap: u(14), rowGap: u(30) }}
-    >
-      <MenuTile
-        icon="rebirth"
-        label="Rebirth"
-        top={`${rebirthPct}%`}
-        alert={rebirthPct >= 100}
-        onClick={() => togglePanel('rebirth')}
-      />
-      <MenuTile icon="pets" label="Pets" alert={petAlert} onClick={() => togglePanel('pets')} />
-      <MenuTile icon="items" label="Items" alert={itemAlert} onClick={() => togglePanel('items')} />
-      <MenuTile icon="store" label="Store" alert onClick={() => togglePanel('store')} />
-      <MenuTile icon="quest" label="Quests" alert={questAlert} onClick={() => togglePanel('quests')} />
-      <GiftTile />
+    <div className="hud-menu pointer-events-none absolute grid grid-cols-2" style={{ gap: `${u(18)} ${u(22)}` }}>
+      <Tile icon="door" label="Play" gradient={GRADIENTS.greenButton} onClick={() => openPanel('chapters')} onPointerEnter={prefetchStage} />
+      <Tile icon="speed" label="Perks" gradient={GRADIENTS.purpleButton} onClick={() => openPanel('perks')} alert={perkReady} />
+      <Tile icon="palette" label="Skins" gradient={GRADIENTS.redButton} onClick={() => openPanel('skins')} alert={skinReady} />
+      <Tile icon="quest" label="Quests" gradient={GRADIENTS.goldButton} onClick={() => openPanel('quests')} alert={questReady} />
+      <Tile icon="stats" label="Stats" gradient={GRADIENTS.blueButton} onClick={() => openPanel('stats')} />
+      <Tile icon="store" label="Shop" gradient={GRADIENTS.slate} onClick={() => openPanel('store')} />
     </div>
   )
 }

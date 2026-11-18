@@ -1,118 +1,140 @@
-import { comboBonus, crowdBonus, dayNumber, EGGS, hitGrade, ITEMS, MULTI_HATCH, PADS, SHOP, TIRES, TOSS_COOLDOWN, ZONES } from './balance.js'
-import { applyStreak, claimQuest, claimQuestBonus, ensureQuests, progressQuests, questText, rollLuckyGift } from './engage.js'
+import { dayNumber, DRONE_RADIUS, RATE_SLACK, REACH_SLACK, SCREW_CRYSTAL, SCREW_GOLD, toolById } from './balance.js'
+import { claimQuest, claimQuestBonus, ensureQuests, progressQuests, questText } from './engage.js'
+import { atDoor, atHopper, spawnPoint } from './layout.js'
 import {
+  actionTime,
   advanceTutorial,
   applyAdReward,
   applyGemProduct,
-  applyRebirth,
-  applyRoll,
-  applyThrow,
-  applyTrain,
   awardBadge,
-  buyHealthPack,
-  buyShopItem,
-  buyTire,
+  bagCapacity,
+  buyPerk,
+  buySkin,
+  buyTool,
+  buyUpgrade,
   claimDaily,
-  claimSecretStar,
-  claimFreeReward,
-  claimPlaytime,
-  createSession,
-  deletePet,
-  equipBestPets,
-  equipPet,
-  equipTire,
-  hatchEgg,
-  isMaxLevel,
-  isPadUnlocked,
-  skipRebirth,
-  unequipPet,
-  usePortal,
-  usePotion,
+  clearChapter,
+  crystalsPerScrew,
+  droneRate,
+  endTeamRun,
+  equipSkin,
+  equipTool,
+  isDifficultyUnlocked,
+  joinFresh,
+  newRunSpec,
+  pauseRun,
+  reachOf,
+  resumeRun,
+  screwValue,
+  sellBag,
 } from './logic.js'
-import { eggStandNear, FREE_REWARD, inRect, inRollZone, onPad, portalAt, STAR, standRect, TIRE_STANDS } from './world.js'
+import { RunInstance } from './run.js'
+import { SPAWN } from './world.js'
 
-const TIRE_INDEX = Object.fromEntries(TIRES.map((t, i) => [t.id, i]))
-/** Reaching the hotel's deluxe floors (floor 21) earns its badge; the last floor has its own. */
-const SPACE_ZONE = 20
-
+/** Slack (m) on where you must stand to use the door (lag). */
+const STAND_SLACK = 1.4
+/** Slack on standing at the hopper: just enough for lag, so you can't sell from across the room. */
+const SELL_SLACK = 0.9
+/** Eye height above the feet, for reach checks. */
+const EYE = 1.6
+/** Most screw ids one 'unscrew' message may carry. */
+const MAX_IDS = 64
 /** Quest progress is sent at least this often (seconds) while it's changing. */
 const QUEST_SYNC = 5
-/** How far off a pad still counts as "on" it (network jitter). */
-const PAD_SLACK = 0.8
-/** Same for the drop zone. */
-const ROLL_SLACK = 1.5
-/** Tires are bought by standing at their stand; allow for a little lag. */
-const STAND_SLACK = 2
+
+/** Runs made where no host keeps a registry (offline play, tests). */
+const standaloneRuns = { create: (spec) => new RunInstance(spec) }
 
 /**
- * One player's authoritative session: validates intents, runs the training tick and
- * reports what happened through `emit`.
+ * Starts a run for `members` (PlayerSessions, `host` among them): a party, or a party of
+ * one. `action` 'start' makes a new run of `chapter`/`diff`; 'load' carries on the host's
+ * saved run. Everyone but a loading host starts their own side (cash, bag, tools) fresh.
+ * Returns the run, or null if it couldn't start.
+ */
+export function startParty(host, members, { action, chapter, diff, pad }, now, runs = standaloneRuns) {
+  const players = members.filter((m) => !m.inRun)
+  if (!players.includes(host)) return null
+  // A team pad's run: always a new one, and never saved (each player's solo save waits).
+  const team = Boolean(pad)
+  if (team && action === 'load') return null
+  let spec
+  if (action === 'load') {
+    if (!host.profile.run) return null
+    spec = { ...host.profile.run }
+  } else {
+    if (!isDifficultyUnlocked(host.profile, String(chapter), Number(diff))) return null
+    spec = newRunSpec(host.profile, String(chapter), Number(diff), host.rand)
+  }
+  const run = runs.create(spec)
+  players.forEach((m, k) => m.joinRun(run, { fresh: !(action === 'load' && m === host), team, now, k, n: players.length }))
+  return run
+}
+
+/**
+ * One player's authoritative session: validates intents and reports what happened
+ * through `emit`. The run being played (shared with a party, or alone) is a RunInstance;
+ * this session is one of its members.
  *
  * Transport-agnostic on purpose. The Colyseus room wraps one of these per client; the
- * offline mode wraps one for the local player. Either way the rules that run are
- * byte-for-byte the same.
+ * offline mode wraps one for the local player. Either way the rules that run are the same.
  *
  * Events emitted (type, payload):
- * - 'profile'  { profile, session }  full state, after anything structural
- * - 'train'    { source, pad, gain, health, level, leveledUp, levels, maxed }  each
- *                Skill gain - one per throw; `source` is 'pad' (thrown on throw pad
- *                `pad`) or 'throw' (anywhere else, pad -1)
- * - 'roll'     { distance, wins, prize, discovered, blocked, broken, duration,
- *                multiplier, best, tireId }  a roll to replay
- * - 'pack'     { amount }  a Health pack landed
- * - 'hatch'    { eggId, pets: [{ uid, id }] }  pets to reveal
- * - 'badge'    { id, name }
- * - 'reward'   { label, wins? }  an ad reward or Gems purchase landed
- * - 'world'    { world, first }  stepped through the portal into `world`
- * - 'quest'    { index, text }  one of today's quests just finished (claim it in Quests)
- * - 'streak'   { days, broke, multiplier }  a new day of the login streak while playing
+ * - 'profile'    { profile, session }  full state, after anything structural
+ * - 'unscrewed'  { ok, bad, taken, bag, bagValue, crystals, left, gold, crystal, gained, screws }
+ *                  your batch: taken (`ok`), refused (`bad`: the client puts them back), or
+ *                  already gone to a teammate (`taken`)
+ * - 'screwsGone' { ids, left }  a teammate took these
+ * - 'sold'       { cash, screws }
+ * - 'roomClear'  {}  the last screw of the room is out: the door opens
+ * - 'room'       { room }  through the door into the next room
+ * - 'chapterClear' { chapter, diff, time, best, newBest, crystals, screws, ... }
+ * - 'teleport'   { x, y, z, yaw }  you were moved (into a room, back to the lobby)
+ * - 'badge'      { id, name }
+ * - 'quest'      { index, text }  one of today's quests just finished
+ * - 'reward'     { label, crystals? }  an ad reward, a Gems purchase or a claim landed
  *
- * The roll event also carries `combo` (PERFECTs in a row), `others` (players in the
- * server paying the friends bonus) and `gift` (a lucky gift it landed, or null). The
- * session state sent with every profile carries `streak`: today's login streak news.
- *
- * `onRoll(result)` lets the host tell other players about a roll (ghost tires).
+ * `onTeleport(x, z)` lets the host accept the jump in position; `runs` ({ create(spec) })
+ * lets it keep the runs it hosts.
  */
 export class PlayerSession {
   /**
    * @param {object} profile normalized profile (see logic.normalizeProfile)
    * @param {{ now: number, emit: (type: string, payload?: object) => void,
    *           getPosition: () => {x: number, y: number, z: number},
-   *           onPurchase?: (productId: string) => boolean,
-   *           onRoll?: (result: object) => void, getOthers?: () => number,
-   *           rand?: () => number }} options
-   *   `onPurchase` lets the host veto or count a shop sale (stock limits). `getOthers`
-   *   says how many other players share your server and world (the friends bonus).
+   *           onTeleport?: (x: number, z: number) => void, rand?: () => number,
+   *           runs?: { create: (spec: object) => RunInstance } }} options
    */
-  constructor(profile, { now, emit, getPosition, onPurchase, onRoll, getOthers, rand = Math.random }) {
+  constructor(profile, { now, emit, getPosition, onTeleport, rand = Math.random, runs = standaloneRuns }) {
     this.profile = profile
-    this.session = createSession(now)
+    this.session = { startedAt: now }
     this.emit = emit
     this.getPosition = getPosition
-    this.onPurchase = onPurchase
-    this.onRoll = onRoll
-    this.getOthers = getOthers
+    this.onTeleport = onTeleport
     this.rand = rand
-
-    // Coming back: today counts into the login streak (the client shows the news from
-    // the session state), today's quests are dealt, and a fresh PERFECT combo.
-    this.session.streak = applyStreak(profile, now)
-    this.session.combo = 0
+    this.runs = runs
     ensureQuests(profile, now)
     this.day = dayNumber(now)
-    /** Seconds played towards the next "play for N minutes" quest minute. */
     this.minuteTimer = 0
-    /** Quest progress not yet sent, and seconds since it last was. */
     this.questsChanged = false
     this.questSync = 0
-
-    /** Pad the client says it's on; checked against their position at every throw. */
-    this.pad = -1
-    /** Server time of the next throw allowed (TOSS_COOLDOWN). */
-    this.nextTossAt = 0
-    /** Server time until which the player's phone is out (and its result) and can't drop again. */
-    this.busyUntil = 0
     this.dirty = false
+    /** The run you're in (a RunInstance), or null in the lobby. */
+    this.run = null
+    /** Unscrew allowance (token buckets): your hands, and the drone. */
+    this.hands = { tokens: 0, at: now }
+    this.drone = { tokens: 0, at: now }
+    // A run always resumes in the lobby (normalizeProfile clears `active`).
+    if (profile.run) profile.run.active = false
+  }
+
+  /** Whether the player is inside a run's room right now (positions are room coordinates). */
+  get inRun() {
+    return this.run !== null
+  }
+
+  /** The current room's layout while in a run, else null. */
+  get layout() {
+    return this.run ? this.run.layout : null
   }
 
   // --- Plumbing --------------------------------------------------------------------
@@ -136,264 +158,324 @@ export class PlayerSession {
     if (advanceTutorial(this.profile, event)) this.dirty = true
   }
 
-  /**
-   * Counts towards today's quests, and tells the client about any just finished. Plain
-   * progress goes to the client with the next profile (at most QUEST_SYNC later), not a
-   * whole profile per pull-up rep.
-   */
-  quest(counter, amount, now) {
-    const finished = progressQuests(this.profile, counter, amount, now)
+  quest(type, amount, now) {
+    const finished = progressQuests(this.profile, type, amount, now)
     if (amount > 0) this.questsChanged = true
     if (finished.length) this.dirty = true
     for (const index of finished) this.emit('quest', { index, text: questText(this.profile.quests.list[index]) })
+  }
+
+  teleport(x, z, yaw) {
+    this.onTeleport?.(x, z)
+    this.emit('teleport', { x, y: 0, z, yaw })
+  }
+
+  toLobby() {
+    this.teleport(SPAWN.x + (this.rand() - 0.5) * 3, SPAWN.z, Math.PI)
+  }
+
+  /**
+   * Into `run`: your own side started fresh (`fresh`) or carried on from your save, as
+   * member `k` of `n` (where you stand at the start).
+   */
+  joinRun(run, { fresh, team = false, now, k = 0, n = 1 }) {
+    if (fresh) joinFresh(this.profile, run.shared(), now, { team })
+    else resumeRun(this.profile, now)
+    this.run = run
+    run.add(this)
+    this.hands = { tokens: 0, at: now }
+    this.drone = { tokens: 0, at: now }
+    this.sendProfile()
+    const at = spawnPoint(run.layout, k, n)
+    this.teleport(at.x, at.z, at.yaw)
+  }
+
+  /**
+   * Out of the run (back to the lobby, or gone). A solo run stays saved for LOAD; a team
+   * run is over for you (the team plays on) and your solo save is back.
+   */
+  exitRun(now, { silent = false } = {}) {
+    const run = this.run
+    if (!run) return
+    this.run = null
+    if (this.profile.run?.team) endTeamRun(this.profile)
+    else {
+      run.sync(this)
+      pauseRun(this.profile, now)
+    }
+    run.remove(this)
+    if (silent) return
+    this.sendProfile()
+    this.toLobby()
+  }
+
+  /** Whether this player can start a party run of this kind right now. */
+  canHost({ action, chapter, diff }) {
+    if (this.inRun) return false
+    if (action === 'load') return Boolean(this.profile.run)
+    return isDifficultyUnlocked(this.profile, String(chapter), Number(diff))
   }
 
   // --- Intents ---------------------------------------------------------------------
 
   /** Dispatches one client message. Unknown types are ignored. */
   handle(type, payload = {}, now) {
+    // Own handlers only: never a name every object inherits ('toString', '__proto__'...).
+    if (!Object.hasOwn(this.handlers, type)) return
     const handler = this.handlers[type]
-    if (!handler) return
+    if (typeof handler !== 'function') return
     handler.call(this, payload || {}, now)
     if (this.dirty) this.sendProfile()
   }
 
   handlers = {
-    enterPad({ pad }) {
-      const index = Number(pad)
-      if (!Number.isInteger(index) || !PADS[index]) return
-      if (!isPadUnlocked(this.profile, index)) return
-      this.pad = index
+    /** CREATE, alone: a new run of `chapter` at difficulty `diff`, straight into its first room. */
+    startRun({ chapter, diff }, now) {
+      if (this.inRun) return
+      startParty(this, [this], { action: 'start', chapter, diff }, now, this.runs)
     },
 
-    leavePad() {
-      this.pad = -1
+    /** LOAD, alone: back into the saved run. */
+    loadRun(_payload, now) {
+      if (this.inRun || !this.profile.run) return
+      startParty(this, [this], { action: 'load' }, now, this.runs)
+    },
+
+    /** Back to the lobby; the run stays saved for LOAD. */
+    leaveRun(_payload, now) {
+      this.exitRun(now)
     },
 
     /**
-     * One throw of your phone (a click, a tap, THROW): Skill - a throw pad's worth when
-     * you're really standing on the pad you're on, else your phone's own. At most one per
-     * TOSS_COOLDOWN, and none while your phone is out on a drop.
+     * Screws the client unscrewed: `ids`, by your hands (aimed, within reach) or by your
+     * Helper Drone (`drone`, near you). Each is checked - real, still in, close enough,
+     * room in your bag, and not faster than your tool (or drone) can go - and taken or
+     * refused one by one. One a teammate already took is `taken`: it's out, just not yours.
      */
-    toss(_payload, now) {
-      if (now < this.busyUntil || now < this.nextTossAt) return
-      this.nextTossAt = now + TOSS_COOLDOWN * 1000
-      const onPad = this.onClaimedPad()
-      const result = onPad ? applyTrain(this.profile, this.pad, now) : applyThrow(this.profile, now)
-      if (!result.ok) {
-        this.pad = -1
+    unscrew({ ids, drone }, now) {
+      const run = this.run
+      const mine = this.profile.run
+      if (!run || !mine || !Array.isArray(ids) || !ids.length) return
+      const { layout, kinds } = run
+      const byDrone = Boolean(drone)
+      const bucket = byDrone ? this.drone : this.hands
+      let rate
+      let cap
+      if (byDrone) {
+        rate = droneRate(this.profile) * RATE_SLACK
+        cap = 4
+      } else {
+        const tool = toolById(mine.tool)
+        rate = (tool.max / actionTime(this.profile, tool.id, now)) * RATE_SLACK
+        cap = tool.max * 2 + 3
+      }
+      if (rate <= 0) return
+      bucket.tokens = Math.min(cap, bucket.tokens + ((now - bucket.at) / 1000) * rate)
+      bucket.at = now
+
+      const p = this.getPosition()
+      const ex = p.x
+      const ey = (p.y || 0) + EYE
+      const ez = p.z
+      const reach = byDrone ? DRONE_RADIUS + EYE + REACH_SLACK : reachOf(this.profile) + REACH_SLACK
+      const reachSq = reach * reach
+      const capacity = bagCapacity(this.profile)
+      const crystalsEach = crystalsPerScrew(this.profile)
+
+      const ok = []
+      const bad = []
+      const taken = []
+      let gold = 0
+      let crystal = 0
+      let crystals = 0
+      let gained = 0
+      for (const raw of ids.slice(0, MAX_IDS)) {
+        const i = Number(raw)
+        if (!Number.isInteger(i) || i < 0 || i >= layout.count) continue
+        if (run.isOut(i)) {
+          taken.push(i)
+          continue
+        }
+        const dx = layout.pos[i * 3] - ex
+        const dy = layout.pos[i * 3 + 1] - ey
+        const dz = layout.pos[i * 3 + 2] - ez
+        const kind = kinds[i]
+        const needsBag = kind !== SCREW_CRYSTAL
+        if (dx * dx + dy * dy + dz * dz > reachSq || bucket.tokens < 1 || (needsBag && mine.bag >= capacity)) {
+          bad.push(i)
+          continue
+        }
+        bucket.tokens -= 1
+        run.take(i)
+        ok.push(i)
+        mine.screws += 1
+        this.profile.stats.screws += 1
+        if (kind === SCREW_CRYSTAL) {
+          crystal += 1
+          crystals += crystalsEach
+        } else {
+          if (kind === SCREW_GOLD) gold += 1
+          const value = screwValue(this.profile, kind)
+          mine.bag += 1
+          mine.bagValue += value
+          gained += value
+        }
+      }
+      if (ok.length) {
+        run.commit()
+        this.profile.crystals += crystals
+        this.profile.stats.gold += gold
+        this.profile.stats.crystal += crystal
+        const total = this.profile.stats.screws
+        this.quest('screws', ok.length, now)
+        if (gold) this.quest('gold', gold, now)
+        if (crystal) {
+          this.quest('crystal', crystal, now)
+          this.badge('crystal')
+        }
+        this.tutorial('screw')
+        this.badge('firstScrew')
+        if (total >= 1000) this.badge('thousand')
+        if (total >= 100000) this.badge('hundredK')
+        run.broadcast('screwsGone', { ids: ok, left: run.left }, this)
+      }
+      this.emit('unscrewed', {
+        ok,
+        bad,
+        taken,
+        bag: mine.bag,
+        bagValue: mine.bagValue,
+        crystals: this.profile.crystals,
+        left: run.left,
+        gold,
+        crystal,
+        gained,
+        drone: byDrone,
+        screws: this.profile.stats.screws,
+      })
+      if (ok.length && run.left === 0) {
+        run.broadcast('roomClear', {})
+        for (const m of run.members) m.dirty = true
+        for (const m of run.members) if (m !== this) m.sendProfile()
+      }
+    },
+
+    /** Sells your bag: only standing at the SELL hopper. */
+    sell(_payload, now) {
+      const layout = this.layout
+      if (!layout) return
+      const p = this.getPosition()
+      if (!atHopper(layout, p.x, p.z, SELL_SLACK)) return
+      const result = sellBag(this.profile)
+      if (!result.ok) return
+      this.emit('sold', { cash: result.cash, screws: result.screws })
+      this.quest('sells', 1, now)
+      this.tutorial('sell')
+      this.badge('firstSell')
+      this.dirty = true
+    },
+
+    /** Buys a tool with this run's cash (from its pedestal or the hotbar). */
+    buyTool({ id }) {
+      const result = buyTool(this.profile, String(id))
+      if (!result.ok) return
+      this.tutorial('tool')
+      this.badge('firstTool')
+      this.dirty = true
+    },
+
+    equipTool({ id }) {
+      if (equipTool(this.profile, String(id)).ok) this.dirty = true
+    },
+
+    upgrade({ stat }, now) {
+      const result = buyUpgrade(this.profile, String(stat))
+      if (!result.ok) return
+      this.quest('upgrades', 1, now)
+      this.tutorial('upgrade')
+      this.dirty = true
+    },
+
+    /**
+     * Through the open exit door: the whole party moves on together - into the next room,
+     * or out of the chapter, each with their own rewards.
+     */
+    nextRoom(_payload, now) {
+      const run = this.run
+      if (!run || run.left > 0) return
+      const p = this.getPosition()
+      if (!atDoor(run.layout, p.x, p.z, STAND_SLACK)) return
+      const members = [...run.members]
+      for (const m of members) {
+        m.profile.stats.rooms += 1
+        m.quest('rooms', 1, now)
+        m.badge('firstRoom')
+      }
+      if (!run.last) {
+        run.loadRoom(run.room + 1, '')
+        members.forEach((m, k) => {
+          run.sync(m)
+          m.profile.run.savedAt = now
+          m.emit('room', { room: run.room })
+          m.sendProfile()
+          const at = spawnPoint(run.layout, k, members.length)
+          m.teleport(at.x, at.z, at.yaw)
+        })
         return
       }
-      this.gain(onPad ? 'pad' : 'throw', onPad ? this.pad : -1, result)
-      this.quest('rep', 1, now)
-      this.tutorial('train')
+      for (const m of members) {
+        run.sync(m)
+        const result = clearChapter(m.profile)
+        m.run = null
+        run.remove(m)
+        m.badge(result.chapter)
+        m.emit('chapterClear', result)
+        m.sendProfile()
+        m.toLobby()
+      }
     },
 
-    setting({ key, value }) {
-      if (key === 'autoRebirth') this.profile.settings.autoRebirth = Boolean(value)
-      else if (key === 'autoRoll' && this.profile.passes.autoRoll) this.profile.settings.autoRoll = Boolean(value)
-      else return
-      this.dirty = true
+    buyPerk({ id }) {
+      if (this.inRun) return
+      if (buyPerk(this.profile, String(id)).ok) this.dirty = true
     },
 
-    rebirth() {
-      const result = applyRebirth(this.profile)
-      if (result.ok) this.afterRebirth(result)
+    buySkin({ id }) {
+      if (buySkin(this.profile, String(id)).ok) this.dirty = true
     },
 
-    skipRebirth() {
-      const result = skipRebirth(this.profile)
-      if (result.ok) this.afterRebirth(result)
+    equipSkin({ id }) {
+      if (equipSkin(this.profile, String(id)).ok) this.dirty = true
     },
 
-    /**
-     * Drops your phone: only from the DROP ZONE, and not while one is still falling.
-     * `accuracy` (0-1) is where the throw meter stopped; absent for Auto Drop.
-     */
-    roll(payload, now) {
-      if (now < this.busyUntil) return
-      const p = this.getPosition()
-      if (!inRollZone(p.x, p.z, ROLL_SLACK)) return
-      const accuracy = Number.isFinite(payload?.accuracy) ? Math.min(1, Math.max(0, payload.accuracy)) : null
-      // PERFECTs in a row build a combo (anything less breaks it); friends in the server
-      // pay a bonus too. Then, sometimes, a lucky gift on top.
-      const grade = hitGrade(accuracy)
-      this.session.combo = grade?.id === 'perfect' ? (this.session.combo || 0) + 1 : 0
-      const combo = this.session.combo
-      const others = Math.max(0, Math.floor(this.getOthers?.() || 0))
-      const result = applyRoll(this.profile, now, accuracy, comboBonus(combo) * crowdBonus(others))
-      const gift = rollLuckyGift(this.profile, this.rand)
-      this.busyUntil = now + result.cooldown * 1000
-      this.pad = -1
-      this.emit('roll', {
-        distance: result.distance,
-        wins: result.wins,
-        prize: result.prize,
-        discovered: result.discovered,
-        blocked: result.blocked,
-        broken: result.broken,
-        duration: result.duration,
-        multiplier: result.multiplier,
-        hit: result.hit,
-        best: result.best,
-        tireId: this.profile.equippedTire,
-        combo,
-        others,
-        gift,
-      })
-      this.onRoll?.(result)
-      this.quest('launch', 1, now)
-      if (result.hit === 'perfect' || result.hit === 'great') this.quest('great', 1, now)
-      if (result.hit === 'perfect') this.quest('perfect', 1, now)
-      this.quest('combo', combo, now)
-      this.quest('meters', result.distance, now)
-      this.quest('far', result.distance, now)
-      // The HUD holds the new Wins back until the phone stops; the profile can go now.
-      this.dirty = true
-      this.tutorial('roll')
-      this.badge('firstRoll')
-      if (result.broken > 0) this.badge('firstWall')
-      if (result.distance >= 1000) this.badge('kilometer')
-      if (this.profile.stats.bestZone >= SPACE_ZONE) this.badge('space')
-      if (this.profile.stats.bestZone >= ZONES.length - 1) this.badge('cosmic')
-    },
-
-    buyTire({ id }) {
-      if (!this.nearStandFor(id)) return
-      const result = buyTire(this.profile, id)
+    claimDaily(_payload, now) {
+      const result = claimDaily(this.profile, now)
       if (!result.ok) return
       this.dirty = true
-      if (result.bought) this.tutorial('buyTire')
-    },
-
-    equipTire({ id }) {
-      const result = equipTire(this.profile, id)
-      if (result.ok) this.dirty = true
-    },
-
-    buyPack({ index }) {
-      const result = buyHealthPack(this.profile, Number(index))
-      if (!result.ok) return
-      this.dirty = true
-      this.emit('pack', { amount: result.amount })
-    },
-
-    hatch({ eggId, count }) {
-      const egg = EGGS[eggId]
-      if (!egg) return
-      const p = this.getPosition()
-      if (eggStandNear(p.x, p.z)?.eggId !== eggId) return
-      const n = count === MULTI_HATCH ? MULTI_HATCH : 1
-      this.reveal(hatchEgg(this.profile, eggId, n))
-    },
-
-    openEggItem({ itemId }) {
-      const item = ITEMS[itemId]
-      if (!item || item.kind !== 'egg') return
-      this.reveal(hatchEgg(this.profile, item.egg, 1, { paid: 'item' }))
-    },
-
-    equipPet({ uid }) {
-      if (equipPet(this.profile, Number(uid)).ok) this.dirty = true
-    },
-
-    unequipPet({ uid }) {
-      unequipPet(this.profile, Number(uid))
-      this.dirty = true
-    },
-
-    equipBest() {
-      equipBestPets(this.profile)
-      this.dirty = true
-    },
-
-    deletePet({ uid }) {
-      if (deletePet(this.profile, Number(uid)).ok) this.dirty = true
-    },
-
-    claimDaily({ day }, now) {
-      const result = claimDaily(this.profile, Number(day), now)
-      this.afterReward(result)
-    },
-
-    claimPlaytime({ index }, now) {
-      const result = claimPlaytime(this.profile, this.session, Number(index), now)
-      this.afterReward(result)
-    },
-
-    claimFreeReward() {
-      const p = this.getPosition()
-      if (Math.hypot(p.x - FREE_REWARD.x, p.z - FREE_REWARD.z) > FREE_REWARD.radius + 1.5) return
-      const result = claimFreeReward(this.profile, this.session)
-      this.afterReward(result)
-    },
-
-    /** Picks up Palm Beach's Secret Star: only standing at it, in Palm Beach, once. */
-    findStar() {
-      const p = this.getPosition()
-      if (Math.hypot(p.x - STAR.x, p.z - STAR.z) > STAR.radius + 1) return
-      if (!claimSecretStar(this.profile)) return
-      this.dirty = true
-      this.emit('star', {})
-      this.badge('secretStar')
-    },
-
-    portal() {
-      const p = this.getPosition()
-      const portal = portalAt(p.x, p.z, 2)
-      if (!portal) return
-      const result = usePortal(this.profile)
-      if (!result.ok) return
-      this.dirty = true
-      if (result.world === 1) this.badge(portal.id)
-      this.emit('world', { world: result.world, first: Boolean(result.first) })
+      this.emit('reward', { label: `DAY ${result.day + 1} REWARD`, crystals: result.crystals })
     },
 
     claimQuest({ index }, now) {
       const result = claimQuest(this.profile, Number(index), now)
       if (!result.ok) return
       this.dirty = true
-      this.emit('reward', { label: result.label, wins: result.wins, items: result.items })
+      this.emit('reward', { label: result.label, crystals: result.crystals })
     },
 
     claimQuestBonus(_payload, now) {
       const result = claimQuestBonus(this.profile, now)
       if (!result.ok) return
       this.dirty = true
-      this.emit('reward', { label: result.label, wins: result.wins, items: result.items })
-    },
-
-    usePotion({ itemId }, now) {
-      const result = usePotion(this.profile, itemId, now)
-      if (!result.ok) return
-      this.dirty = true
-    },
-
-    /** Buys a SHOP item with Wins. */
-    purchase({ productId }) {
-      const item = SHOP[productId]
-      if (!item) return
-      // Checked before the host takes stock, so a short wallet never uses up a Sphinx.
-      if (this.profile.wins < item.price) return
-      if (item.kind === 'pass' && this.profile.passes[productId]) return
-      if (this.onPurchase && !this.onPurchase(productId)) return
-      const result = buyShopItem(this.profile, productId)
-      if (!result.ok) return
-      this.dirty = true
-      this.reveal(result)
+      this.emit('reward', { label: result.label, crystals: result.crystals })
     },
   }
 
   // --- Granted by the host, never by a client message --------------------------------
 
-  /**
-   * A rewarded ad the host has verified with Boxity (or, offline, that Boxity reported
-   * watched). Not a handler: a client can't ask for it directly.
-   */
+  /** A rewarded ad the host has verified with Boxity (or, offline, that Boxity reported watched). */
   grantAdReward(placement, now) {
-    const result = applyAdReward(this.profile, this.session, placement, now)
+    const result = applyAdReward(this.profile, placement, now)
     if (!result.ok) return result
-    this.dirty = true
     this.emit('reward', { label: result.label })
     this.sendProfile()
     return result
@@ -403,66 +485,24 @@ export class PlayerSession {
   grantGemProduct(sku) {
     const result = applyGemProduct(this.profile, sku)
     if (!result.ok) return result
-    this.dirty = true
-    this.emit('reward', { label: result.name, wins: result.wins || 0 })
+    this.emit('reward', { label: result.name, crystals: result.crystals })
     this.sendProfile()
     return result
   }
 
-  afterReward(result) {
-    if (!result?.ok) return
-    this.dirty = true
-    if (result.pets?.length) this.reveal(result)
-  }
-
-  /** Sends newly gained pets to the client's hatch animation. */
-  reveal(result) {
-    if (!result?.ok || !result.pets?.length) return
-    this.dirty = true
-    this.emit('hatch', { eggId: result.eggId ?? null, pets: result.pets })
-    this.quest('hatch', result.pets.length, Date.now())
-    this.tutorial('hatch')
-    this.badge('firstPet')
-  }
-
-  afterRebirth({ gift } = {}) {
-    this.dirty = true
-    this.tutorial('rebirth')
-    if (this.profile.rebirths === 1) this.badge('firstRebirth')
-    // Every 5th rebirth from 15: eggs, waiting in Items.
-    if (gift) this.emit('reward', { label: `REBIRTH ${gift.rebirths} GIFT: ${gift.label} in Items` })
-  }
-
   // --- Simulation ------------------------------------------------------------------
 
-  /** Whether the player stands at (or right by) the stand for tire `id`. */
-  nearStandFor(id) {
-    const stand = TIRE_STANDS[TIRE_INDEX[id]]
-    if (!stand) return false
-    const p = this.getPosition()
-    return inRect(standRect(stand), p.x, p.z, STAND_SLACK)
-  }
-
-  /** Whether the player is really standing on the pad they claim. */
-  onClaimedPad() {
-    if (this.pad < 0) return false
-    const p = this.getPosition()
-    return onPad(this.pad, p.x, p.z, PAD_SLACK)
-  }
-
   /**
-   * Advances the clock: playtime, quests and the day. (Skill only ever comes from a throw:
-   * nothing is earned just for being here.) Call at a steady rate (the room's simulation
-   * interval).
+   * Advances the clock: playtime, quests and the day - and, for the first member of a run,
+   * the run's own clock. Call at a steady rate.
    */
   tick(dt, now) {
     this.profile.stats.playtime += dt
-    // A minute played towards today's quests; and past midnight, a new day: fresh
-    // quests and the next day of the streak.
+    if (this.run && this.run.members[0] === this) this.run.tick(dt)
     this.minuteTimer += dt
     if (this.minuteTimer >= 60) {
       this.minuteTimer -= 60
-      this.quest('minute', 1, now)
+      this.quest('minutes', 1, now)
     }
     this.questSync += dt
     if (this.questsChanged && this.questSync >= QUEST_SYNC) this.dirty = true
@@ -470,35 +510,7 @@ export class PlayerSession {
     if (day !== this.day) {
       this.day = day
       if (ensureQuests(this.profile, now)) this.dirty = true
-      const streak = applyStreak(this.profile, now)
-      if (streak.changed) {
-        this.session.streak = streak
-        this.dirty = true
-        this.emit('streak', streak)
-      }
     }
     if (this.dirty) this.sendProfile()
   }
-
-  /** Tells the client about a Skill gain from `source` ('pad' or 'throw'). */
-  gain(source, pad, result) {
-    // At max level gains stop; there's nothing to show.
-    if (result.gain > 0) {
-      this.emit('train', {
-        source,
-        pad,
-        gain: result.gain,
-        health: this.profile.health,
-        level: this.profile.level,
-        leveledUp: result.leveledUp,
-        levels: result.levels,
-        maxed: result.maxed,
-      })
-    }
-    if (this.profile.settings.autoRebirth && isMaxLevel(this.profile)) {
-      const rebirth = applyRebirth(this.profile)
-      if (rebirth.ok) this.afterRebirth(rebirth)
-    }
-  }
-
 }

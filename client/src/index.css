@@ -9,6 +9,8 @@
    * and floored so touch targets stay usable on phones.
    */
   --px: clamp(0.3px, min(100vw / 1920, 100vh / 1080), 1.4px);
+  /* The unscaled unit, for a subtree that scales itself (a panel making room for ads). */
+  --px-root: var(--px);
 }
 
 /*
@@ -28,11 +30,7 @@
   left: calc(var(--px) * 18);
   top: calc(var(--px) * 380);
 }
-.hud-passes {
-  right: calc(var(--px) * 24);
-  top: 34%;
-}
-/* The stick's resting spot and the jump button (TouchControls.jsx). */
+/* The stick's resting spot, JUMP and (in a room) USE (TouchControls.jsx). */
 .touch-joy-rest {
   top: calc(100% - 129px);
 }
@@ -40,10 +38,10 @@
   right: 14px;
   bottom: 14px;
 }
-/* Over the jump button, under the same thumb. */
-.touch-throw {
-  right: 1px;
-  bottom: 100px;
+/* Over and left of JUMP, under the right thumb. */
+.touch-use {
+  right: 92px;
+  bottom: 60px;
 }
 
 @media (orientation: portrait) {
@@ -52,33 +50,100 @@
     --px: clamp(0.3px, min(100vw / 1000, 100vh / 1900), 1.4px);
   }
   .hud-topcenter {
-    top: calc(var(--px) * 96);
-  }
-  .hud-stats {
-    top: calc(var(--px) * 380);
+    top: calc(var(--px) * 300);
   }
   .hud-menu {
     top: calc(var(--px) * 600);
   }
-  .hud-passes {
-    top: calc(var(--px) * 420);
+  /* The hotbar rides above the joystick and buttons; the wallet above it. */
+  .hud-hotbar {
+    bottom: calc(150px + var(--px) * 20) !important;
   }
-  /* Above the Health bar, which runs the whole width along the bottom. */
+  .hud-wallet {
+    bottom: calc(260px + var(--px) * 20) !important;
+  }
   .touch-joy-rest {
-    top: calc(100% - 129px - var(--px) * 300);
-  }
-  .touch-jump {
-    bottom: calc(14px + var(--px) * 300);
-  }
-  .touch-throw {
-    bottom: calc(100px + var(--px) * 300);
+    top: calc(100% - 129px);
   }
 }
 
+/* Phones held sideways: keep the hotbar clear of the thumbs. */
 @media (orientation: landscape) and (max-height: 500px) {
-  .hud-passes {
-    top: calc(var(--px) * 110);
+  .hud-side {
+    top: 22% !important;
   }
+}
+
+/* Cards three to a row (two on a tall screen): the perks. */
+.card-grid-3 {
+  display: grid;
+  gap: calc(var(--px) * 12);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+/* Four to a row (two by two on a tall screen): the tools. */
+.card-grid-4 {
+  display: grid;
+  gap: calc(var(--px) * 12);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+@media (max-aspect-ratio: 1/1) {
+  .card-grid-3:not(.keep-3),
+  .card-grid-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/*
+ * The chapters panel (ChaptersPanel.jsx): chapters | the chosen one | your saved run,
+ * every column free to shrink (nothing ever scrolls sideways); stacked on tall screens.
+ */
+.chapters-grid {
+  display: grid;
+  gap: calc(var(--px) * 16);
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.6fr);
+}
+.chapters-grid.has-run {
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.55fr) minmax(0, 0.9fr);
+}
+.chapters-list {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--px) * 10);
+}
+/* Difficulty labels sized to their button, so "Impossible" always fits. */
+.difficulty-btn {
+  container-type: inline-size;
+}
+.difficulty-name {
+  font-size: min(calc(var(--px) * 30), 15cqw);
+  line-height: 1.1;
+}
+.difficulty-sub {
+  font-size: min(calc(var(--px) * 20), 10.5cqw);
+  line-height: 1.1;
+}
+@media (max-aspect-ratio: 5/4) {
+  .chapters-grid,
+  .chapters-grid.has-run {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .chapters-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@keyframes pp-pulse-text {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+.pp-pulse-text {
+  animation: pp-pulse-text 0.8s ease-in-out infinite;
 }
 
 html,
@@ -210,6 +275,26 @@ canvas {
   height: 42%;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.72) 0%, rgba(255, 255, 255, 0.1) 100%);
   pointer-events: none;
+}
+
+/* A notification: slides down, stays, slides back up (6s, see LobbyHint). */
+@keyframes pp-notify {
+  0% {
+    transform: translateY(-140%);
+    opacity: 0;
+  }
+  7%,
+  90% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-140%);
+    opacity: 0;
+  }
+}
+.pp-notify {
+  animation: pp-notify 6s cubic-bezier(0.2, 0.9, 0.3, 1.2) forwards;
 }
 
 @keyframes pp-panel-in {

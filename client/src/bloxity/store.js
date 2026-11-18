@@ -39,6 +39,11 @@ export const useBloxityStore = create((set) => ({
    * pauses rendering and the audio is muted for it.
    */
   adBreak: false,
+  /**
+   * While Boxity shows ads around an open panel: the room to leave them, in CSS pixels
+   * `{ left, right, bottom }` (adLayout.js); null when there are none to make room for.
+   */
+  adInsets: null,
   /** The signed-in player's Gems balance; null when unknown (guest, offline, loading). */
   gems: null,
   /** Boxity friends of the signed-in player (`social.getFriends()`); [] for guests. */
@@ -59,6 +64,7 @@ export const useBloxityStore = create((set) => ({
   setProportions: (proportions) =>
     set({ proportions: { ...DEFAULT_PROPORTIONS, ...(proportions || {}) } }),
   setAdBreak: (adBreak) => set({ adBreak }),
+  setAdInsets: (adInsets) => set({ adInsets }),
   setGems: (gems) => set({ gems }),
   setFriends: (friends) => set({ friends }),
   setSetting: (patch) => set(patch),

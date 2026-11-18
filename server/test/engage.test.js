@@ -1,142 +1,202 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { comboBonus, crowdBonus, DAY_MS, LUCKY_CHANCE, QUEST_TYPES, QUESTS_PER_DAY, streakMultiplier } from '../../shared/balance.js'
-import { applyStreak, claimQuest, claimQuestBonus, createQuestDay, ensureQuests, progressQuests, questsReady, rollLuckyGift } from '../../shared/engage.js'
-import { applyRoll, createProfile, normalizeProfile, winsMultiplier, winsForRolls } from '../../shared/logic.js'
+import {
+  AD_REWARDS,
+  BAG_LEVELS,
+  DAILY_REWARDS,
+  DAY_MS,
+  GEM_PRODUCTS,
+  QUEST_BONUS,
+  QUEST_REWARDS,
+  QUEST_TYPES,
+  QUESTS_PER_DAY,
+  SCREW_PLAIN,
+  SPEED_BOOST_MS,
+} from '../../shared/balance.js'
+import { createQuestDay, questText } from '../../shared/engage.js'
+import { clampToRoom, screwKinds, screwPosition } from '../../shared/layout.js'
+import { actionTime, bagCapacity, createProfile, dailyState, luckOf, sellMultiplier, speedMultiplier } from '../../shared/logic.js'
 import { PlayerSession } from '../../shared/session.js'
-import { ROLL_ZONE } from '../../shared/world.js'
 
-const DAY = DAY_MS
-const onPad = () => ({ x: 0, y: 0, z: (ROLL_ZONE.minZ + ROLL_ZONE.maxZ) / 2 })
+/** Noon on day 1000: the fake clock's start. */
+const T0 = 1000 * DAY_MS + DAY_MS / 2
 
-/** A session (no lucky gifts unless `rand` says so), recording every event it emits. */
-function makeSession({ profile = createProfile('p', 'P'), now = 10 * DAY, rand = () => 0.99, others = 0 } = {}) {
-  const events = []
-  const session = new PlayerSession(profile, { now, rand, getOthers: () => others, emit: (type, payload) => events.push({ type, payload }), getPosition: onPad })
-  return { session, profile, events, of: (type) => events.filter((e) => e.type === type) }
+/** A session over a fake clock (`t.now`), recording what it emits. */
+function makeSession(profile = createProfile('p1', 'P')) {
+  const t = { now: T0, pos: { x: 0, y: 0, z: 0 }, events: [], profile }
+  t.session = new PlayerSession(profile, {
+    now: t.now,
+    rand: () => 0.5,
+    emit: (type, payload) => t.events.push({ type, payload }),
+    getPosition: () => t.pos,
+    onTeleport: (x, z) => Object.assign(t.pos, { x, y: 0, z }),
+  })
+  t.advance = (ms) => (t.now += ms)
+  t.send = (type, payload = {}) => t.session.handle(type, payload, t.now)
+  t.of = (type) => t.events.filter((e) => e.type === type).map((e) => e.payload)
+  /** Walks up to plain screw number `n` (of those in the room), waits a second, unscrews it. */
+  t.takePlain = (n) => {
+    const layout = t.session.layout
+    const kinds = screwKinds(layout, t.profile.run.seed, luckOf(t.profile))
+    const plain = [...kinds.keys()].filter((i) => kinds[i] === SCREW_PLAIN)
+    const s = screwPosition(layout, plain[n])
+    Object.assign(t.pos, clampToRoom(layout, s.x, s.z))
+    t.advance(1000)
+    t.send('unscrew', { ids: [plain[n]] })
+  }
+  return t
 }
+
+// --- Quests ------------------------------------------------------------------------
 
 test('each day deals three quests: easy, medium, hard, all different, the same on every call', () => {
   const p = createProfile('player-1', 'P')
   const a = createQuestDay(p, 100)
-  const b = createQuestDay(p, 100)
-  assert.deepEqual(a, b)
+  assert.deepEqual(createQuestDay(p, 100), a)
   assert.equal(a.list.length, QUESTS_PER_DAY)
   assert.deepEqual(a.list.map((q) => q.tier), [0, 1, 2])
   assert.equal(new Set(a.list.map((q) => q.type)).size, QUESTS_PER_DAY)
-  for (const q of a.list) assert.ok(QUEST_TYPES[q.type] && q.target > 0)
-  // Another day, another deal (for at least one of a run of days).
+  for (const q of a.list) assert.equal(q.target, QUEST_TYPES[q.type].targets[q.tier])
   const days = Array.from({ length: 6 }, (_, i) => createQuestDay(p, 101 + i).list.map((q) => q.type).join())
-  assert.ok(days.some((d) => d !== a.list.map((q) => q.type).join()))
+  assert.ok(days.some((d) => d !== a.list.map((q) => q.type).join()), 'another day, another deal')
+  // A new session hands out today's straight away.
+  const t = makeSession()
+  assert.equal(t.profile.quests.day, Math.floor(T0 / DAY_MS))
 })
 
-test('quests count what you do, finish once, and pay a reward that grows with you', () => {
-  const p = createProfile('q', 'Q')
-  const now = 50 * DAY
-  ensureQuests(p, now)
-  p.quests.list = [
-    { type: 'launch', tier: 0, target: 3, progress: 0, claimed: false },
-    { type: 'far', tier: 1, target: 100, progress: 0, claimed: false },
-    { type: 'reps', tier: 2, target: 2, progress: 0, claimed: false },
+test('quests count what you do, finish once, pay once when claimed, then the bonus', () => {
+  const t = makeSession()
+  t.profile.quests.list = [
+    { type: 'screws', tier: 0, target: 3, progress: 0, claimed: false },
+    { type: 'sells', tier: 1, target: 1, progress: 0, claimed: false },
+    { type: 'upgrades', tier: 2, target: 1, progress: 0, claimed: false },
   ]
-  assert.deepEqual(progressQuests(p, 'launch', 2, now), [])
-  assert.deepEqual(progressQuests(p, 'launch', 1, now), [0])
-  assert.deepEqual(progressQuests(p, 'launch', 1, now), [], 'a finished quest stops counting')
-  // "best" quests keep the best single value.
-  progressQuests(p, 'far', 60, now)
-  progressQuests(p, 'far', 40, now)
-  assert.equal(p.quests.list[1].progress, 60)
-  assert.equal(questsReady(p, now), true)
-  const wins = p.wins
-  const claimed = claimQuest(p, 0, now)
-  assert.equal(claimed.ok, true)
-  assert.equal(p.wins - wins, winsForRolls(p, 3))
-  assert.equal(claimQuest(p, 0, now).ok, false, 'never twice')
-  assert.equal(claimQuest(p, 1, now).ok, false, 'not before it is finished')
-  // The HARD one pays a potion too; the chest needs all three.
-  progressQuests(p, 'rep', 2, now)
-  assert.equal(claimQuestBonus(p, now).ok, false)
-  progressQuests(p, 'far', 100, now)
-  claimQuest(p, 1, now)
-  const hard = claimQuest(p, 2, now)
-  assert.deepEqual(hard.items, ['potionWins'])
-  const chest = claimQuestBonus(p, now)
-  assert.equal(chest.ok, true)
-  assert.equal(chest.items.length, 1, 'the chest has an egg')
-  assert.equal(claimQuestBonus(p, now).ok, false)
-  // Tomorrow: a fresh deal.
-  assert.equal(ensureQuests(p, now + DAY), true)
-  assert.ok(p.quests.list.every((q) => q.progress === 0 && !q.claimed) && !p.quests.bonus)
+  const [screws, sells, upgrades] = t.profile.quests.list
+  t.send('startRun', { chapter: 'workshop', diff: 0 })
+  // Twelve $1 screws: enough, once sold, for the first Hand Speed level ($12).
+  for (let n = 0; n < 12; n += 1) t.takePlain(n)
+  assert.equal(screws.progress, 3, 'capped at the target')
+  assert.deepEqual(t.of('quest'), [{ index: 0, text: questText(screws) }], 'finished once')
+  assert.equal(questText(screws), 'Unscrew 3 screws')
+
+  t.send('claimQuest', { index: 1 })
+  assert.equal(t.profile.crystals, 0, 'not done yet')
+  t.send('claimQuest', { index: 0 })
+  assert.equal(t.profile.crystals, QUEST_REWARDS[0])
+  assert.equal(screws.claimed, true)
+  assert.equal(t.of('reward').at(-1).crystals, QUEST_REWARDS[0])
+  t.send('claimQuest', { index: 0 })
+  assert.equal(t.profile.crystals, QUEST_REWARDS[0], 'paid once')
+  t.send('claimQuestBonus')
+  assert.equal(t.profile.crystals, QUEST_REWARDS[0], 'the bonus waits for all three')
+
+  const layout = t.session.layout
+  Object.assign(t.pos, { x: layout.sell.x, z: layout.sell.z })
+  t.send('sell')
+  assert.equal(t.profile.run.cash, 12)
+  t.send('upgrade', { stat: 'speed' })
+  assert.equal(sells.progress, 1)
+  assert.equal(upgrades.progress, 1)
+  t.send('claimQuest', { index: 1 })
+  t.send('claimQuest', { index: 2 })
+  const all = QUEST_REWARDS[0] + QUEST_REWARDS[1] + QUEST_REWARDS[2]
+  assert.equal(t.profile.crystals, all)
+  t.send('claimQuestBonus')
+  assert.equal(t.profile.crystals, all + QUEST_BONUS)
+  t.send('claimQuestBonus')
+  assert.equal(t.profile.crystals, all + QUEST_BONUS, 'one bonus a day')
 })
 
-test('the login streak grows day by day, survives a refresh and resets after a missed day', () => {
-  const p = createProfile('s', 'S')
-  assert.deepEqual([applyStreak(p, 10 * DAY).days, applyStreak(p, 10 * DAY + 5000).days], [1, 1])
-  assert.equal(applyStreak(p, 11 * DAY).days, 2)
-  assert.equal(applyStreak(p, 12 * DAY + 100).days, 3)
-  // It pays: day 3 is x1.2 on every launch's Wins.
-  assert.ok(Math.abs(winsMultiplier(p, 12 * DAY) - streakMultiplier(3)) < 1e-9)
-  assert.ok(Math.abs(streakMultiplier(3) - 1.2) < 1e-9)
-  assert.equal(streakMultiplier(50), 2, 'capped at x2')
-  const broken = applyStreak(p, 14 * DAY)
-  assert.deepEqual([broken.days, broken.broke], [1, true])
-  assert.equal(p.streak.best, 3)
-  // Saved and loaded, it's the same streak.
-  assert.deepEqual(normalizeProfile(JSON.parse(JSON.stringify(p)), 's', 'S').streak, p.streak)
+test('quest progress reaches the client every few seconds, and midnight deals a new day', () => {
+  const t = makeSession()
+  t.profile.quests.list[0] = { type: 'minutes', tier: 0, target: 5, progress: 0, claimed: false }
+  const day = t.profile.quests.day
+  for (let s = 0; s < 60; s += 1) t.session.tick(1, t.advance(1000))
+  assert.equal(t.profile.quests.list[0].progress, 1, 'a minute played')
+  assert.equal(t.profile.stats.playtime, 60)
+  const profiles = t.of('profile').length
+  assert.ok(profiles >= 1, 'progress was sent')
+  t.session.tick(1, t.advance(DAY_MS))
+  assert.equal(t.profile.quests.day, day + 1)
+  assert.equal(t.profile.quests.list.every((q) => q.progress === 0), true)
+  assert.ok(t.of('profile').length > profiles)
 })
 
-test('PERFECTs in a row build a combo bonus; friends in the server add theirs', () => {
-  assert.equal(comboBonus(1), 1)
-  assert.ok(Math.abs(comboBonus(3) - 1.2) < 1e-9)
-  assert.equal(comboBonus(99), 1.5)
-  assert.ok(Math.abs(crowdBonus(2) - 1.2) < 1e-9)
-  assert.equal(crowdBonus(10), 1.3)
+// --- Daily calendar ----------------------------------------------------------------
 
-  const plain = applyRoll(createProfile('x', 'X'), 0, 1)
-  const boosted = applyRoll(createProfile('y', 'Y'), 0, 1, 1.5)
-  // The same launch, half as many Wins again (give or take rounding).
-  assert.ok(Math.abs(boosted.wins - plain.wins * 1.5) <= 1, `${boosted.wins} vs ${plain.wins} x1.5`)
-
-  const { session, of } = makeSession({ others: 2 })
-  for (let i = 0; i < 3; i += 1) {
-    session.busyUntil = 0
-    session.handle('roll', { accuracy: 1 }, 10 * DAY + i * 60000)
+test('the daily calendar pays once a day, builds a streak, and starts over after a missed day', () => {
+  const t = makeSession()
+  const claim = () => {
+    const before = t.profile.crystals
+    t.send('claimDaily')
+    return t.profile.crystals - before
   }
-  assert.deepEqual(of('roll').map((e) => e.payload.combo), [1, 2, 3])
-  assert.ok(of('roll').every((e) => e.payload.others === 2))
-  session.busyUntil = 0
-  session.handle('roll', { accuracy: 0.5 }, 10 * DAY + 600000)
-  assert.equal(of('roll').at(-1).payload.combo, 0, 'a GOOD launch breaks the combo')
+  assert.deepEqual(dailyState(t.profile, t.now), { canClaim: true, next: 0, claimed: 0 })
+  assert.equal(claim(), DAILY_REWARDS[0])
+  assert.equal(t.of('reward').at(-1).label, 'DAY 1 REWARD')
+  assert.equal(claim(), 0, 'once a day')
+  t.advance(DAY_MS)
+  assert.equal(claim(), DAILY_REWARDS[1])
+  t.advance(DAY_MS)
+  assert.equal(claim(), DAILY_REWARDS[2])
+  assert.deepEqual(dailyState(t.profile, t.now), { canClaim: false, next: 2, claimed: 3 })
+
+  t.advance(2 * DAY_MS)
+  assert.equal(dailyState(t.profile, t.now).next, 0, 'a day was missed')
+  assert.equal(claim(), DAILY_REWARDS[0])
+
+  // After day 7 the week starts again.
+  t.profile.daily = { day: Math.floor(t.now / DAY_MS), index: DAILY_REWARDS.length - 1 }
+  t.advance(DAY_MS)
+  assert.equal(claim(), DAILY_REWARDS[0])
 })
 
-test('lucky gifts land LUCKY_CHANCE of the time and pay out', () => {
-  const p = createProfile('l', 'L')
-  assert.equal(rollLuckyGift(p, () => LUCKY_CHANCE + 0.01), null)
-  const rolls = [LUCKY_CHANCE / 2, 0]
-  const gift = rollLuckyGift(p, () => rolls.shift())
-  assert.ok(gift && gift.label)
-  assert.ok(gift.wins > 0 || gift.items.length > 0)
+// --- Ads and Gems ------------------------------------------------------------------
 
-  const { session, of } = makeSession({ rand: () => 0 })
-  session.handle('roll', { accuracy: 1 }, 10 * DAY)
-  assert.ok(of('roll')[0].payload.gift, 'the launch event carries the gift')
+test('a rewarded ad pays once per cooldown', () => {
+  const t = makeSession()
+  const ad = AD_REWARDS['free-crystals']
+  assert.equal(t.session.grantAdReward('free-crystals', t.now).ok, true)
+  assert.equal(t.profile.crystals, ad.grant.crystals)
+  assert.deepEqual(t.of('reward').at(-1), { label: ad.label })
+  t.advance(ad.cooldownMs - 1000)
+  assert.equal(t.session.grantAdReward('free-crystals', t.now).ok, false, 'still cooling down')
+  assert.equal(t.profile.crystals, ad.grant.crystals)
+  t.advance(1000)
+  assert.equal(t.session.grantAdReward('free-crystals', t.now).ok, true)
+  assert.equal(t.profile.crystals, 2 * ad.grant.crystals)
+  assert.equal(t.session.grantAdReward('no-such-ad', t.now).ok, false)
 })
 
-test('the session feeds quests from launches and tells the client when one is done', () => {
-  const profile = createProfile('feed', 'F')
-  const { session, of } = makeSession({ profile })
-  profile.quests.list[0] = { type: 'launch', tier: 0, target: 2, progress: 0, claimed: false }
-  for (let i = 0; i < 2; i += 1) {
-    session.busyUntil = 0
-    session.handle('roll', { accuracy: 0.5 }, 10 * DAY + i * 60000)
-  }
-  assert.equal(of('quest').length, 1)
-  assert.equal(of('quest')[0].payload.index, 0)
-  const wins = profile.wins
-  session.handle('claimQuest', { index: 0 }, 10 * DAY + 200000)
-  assert.ok(profile.wins > wins)
-  assert.equal(of('reward').length, 1)
-  // The streak news rides along with the session state.
-  assert.equal(session.session.streak.days, 1)
+test('the Speed Boost ad doubles hand speed for three minutes', () => {
+  const t = makeSession()
+  t.send('startRun', { chapter: 'workshop', diff: 0 })
+  const normal = actionTime(t.profile, 'driver', t.now)
+  assert.equal(t.session.grantAdReward('speed-boost', t.now).ok, true)
+  assert.equal(t.profile.boosts.speedUntil, t.now + SPEED_BOOST_MS)
+  assert.equal(speedMultiplier(t.profile, t.now), 2)
+  assert.equal(actionTime(t.profile, 'driver', t.now), normal / 2)
+  assert.equal(speedMultiplier(t.profile, t.now + SPEED_BOOST_MS), 1, 'worn off')
+})
+
+test('Gems products grant Crystals and passes; unknown skus nothing', () => {
+  const t = makeSession()
+  const r = t.session.grantGemProduct('crystals_small')
+  assert.equal(r.ok, true)
+  assert.equal(t.profile.crystals, GEM_PRODUCTS.crystals_small.grant.crystals)
+  assert.deepEqual(t.of('reward').at(-1), { label: GEM_PRODUCTS.crystals_small.name, crystals: GEM_PRODUCTS.crystals_small.grant.crystals })
+  assert.equal(t.of('profile').length, 1, 'the new balance is sent')
+
+  for (const sku of ['big_bag', 'cash_x2', 'starter_drill', 'crystal_x2']) assert.equal(t.session.grantGemProduct(sku).ok, true)
+  assert.deepEqual(t.profile.passes, { bagX2: true, cashX2: true, starterDrill: true, crystalX2: true })
+  t.send('startRun', { chapter: 'workshop', diff: 0 })
+  assert.equal(bagCapacity(t.profile), 2 * BAG_LEVELS[0])
+  assert.equal(sellMultiplier(t.profile), 2)
+  assert.deepEqual(t.profile.run.tools, ['driver', 'drill'], 'every run starts with the Power Drill')
+  assert.equal(t.profile.run.tool, 'drill')
+
+  const events = t.events.length
+  assert.equal(t.session.grantGemProduct('nope').ok, false)
+  assert.equal(t.events.length, events, 'nothing said about it')
 })

@@ -58,8 +58,13 @@ export const STYLE = {
   TILES: 18,
 }
 
-/** Shared clock for animated styles; WorldClock advances it once per frame. */
+/** Shared clock for animated styles (water, belts); advanced once per frame (advanceToyTime). */
 export const toyTime = { value: 0 }
+
+/** Sets the animated styles' clock (seconds). Called once per frame by the scene. */
+export function advanceToyTime(seconds) {
+  toyTime.value = seconds
+}
 
 /** Cap colour for STYLE.TERRAIN blocks; the instance colour is the dirt underneath. */
 export const GRASS_COLOR = new Color('#4fd93a')

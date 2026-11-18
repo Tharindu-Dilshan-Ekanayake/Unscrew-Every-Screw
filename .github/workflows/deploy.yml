@@ -35,7 +35,7 @@ env:
   GAME_ID: 1-phone-drop
   # Seats per pod: the Colyseus room's maxClients (GameRoom.js MAX_CLIENTS). When a pod
   # fills to it, Legion's matchmaker starts another.
-  SEAT_CAP: 8
+  SEAT_CAP: 10
 
 concurrency:
   group: deploy-${{ github.ref_name }}

@@ -3,7 +3,6 @@ import { useCallback, useEffect, useState } from 'react'
 import GameController from './GameController'
 import { useGame } from './store/game'
 import GameScene from './game/GameScene'
-import HatchOverlay from './ui/HatchOverlay'
 import HUD from './ui/hud/HUD'
 import LoadingScreen from './ui/LoadingScreen'
 import NameplateLayer from './ui/NameplateLayer'
@@ -41,7 +40,6 @@ function App() {
           <PopupLayer />
           <HUD />
           <Panels />
-          <HatchOverlay />
         </>
       )}
       <ScreenFade />

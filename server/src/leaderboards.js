@@ -1,10 +1,13 @@
-import { getSphinxStock, refreshStock, saveProfile, topPlayers } from './db.js'
+import { saveProfile, topPlayers } from './db.js'
 import { activePlayers, broadcastAll } from './registry.js'
 
 const REFRESH_MS = 60_000
-let cached = { rebirths: [], wins: [], distance: [], playtime: [], updatedAt: 0 }
+let cached = { screws: [], rooms: [], chapters: [], playtime: [], updatedAt: 0 }
 
-/** Latest top-10 boards (Top Rebirths, Top Wins, Longest Roll, Top Playtime). */
+/**
+ * Latest top-10 boards for the lobby: Screws Unscrewed, Rooms Escaped, Chapters Cleared
+ * and Playtime (seconds), each `[{ name, value }]` (db.js topPlayers).
+ */
 export function getLeaderboards() {
   return cached
 }
@@ -21,9 +24,6 @@ async function refresh() {
     )
     cached = { ...(await topPlayers(10)), updatedAt: Date.now() }
     broadcastAll('leaderboards', cached)
-    // Sphinx sales on other pods.
-    const before = getSphinxStock()
-    if ((await refreshStock()) !== before) broadcastAll('stock', { sphinx: getSphinxStock() })
   } catch (err) {
     console.error('[leaderboards] refresh failed', err)
   }

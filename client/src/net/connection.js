@@ -3,7 +3,9 @@ import { environment } from '../bloxity/env'
 import { GAME_SLUG, joinToken, rememberSaveTicket, saveTickets } from '../bloxity/identity'
 import { getSDK, safeCall, waitForSDK } from '../bloxity/sdk'
 
-import { runtime } from '../game/runtime'
+import { GAME_ID } from '@shared/balance'
+
+import { placePlayer, runtime } from '../game/runtime'
 import { getGame } from '../store/game'
 import { setTransport } from './actions'
 import { handleServerEvent } from './events'
@@ -63,7 +65,7 @@ async function findDevServer() {
   for (const port of DEV_PORTS) candidates.push(`${window.location.protocol}//${window.location.hostname}:${port}`)
   for (const url of new Set(candidates)) {
     const health = await healthOf(url)
-    if (health?.ok && health.game === 'phone-plunge') return url
+    if (health?.ok && health.game === GAME_ID) return url
   }
   return null
 }
@@ -219,26 +221,16 @@ function attachRoom(room, identity, Callbacks, endpoint, gen) {
   room.onMessage('*', (type, payload) => {
     switch (type) {
       case 'spawn':
-        runtime.player.position.set(payload.x, 0, payload.z)
+        placePlayer(payload.x, payload.z, Math.PI)
         break
       case 'correct':
         runtime.player.position.set(payload.x, payload.y, payload.z)
-        break
-      case 'stock':
-        getGame().setSphinxStock(payload.sphinx)
         break
       case 'saveTicket':
         rememberSaveTicket(payload)
         break
       case 'leaderboards':
         getGame().setLeaderboards(payload)
-        break
-      case 'ghostRoll':
-        // Never your own drop (you're watching it already), and only drops in your world.
-        // Their avatar plays the throw at the edge (remote/).
-        if (payload.sid === room.sessionId) break
-        if ((payload.world || 0) !== (getGame().profile.world || 0)) break
-        runtime.ghostRolls.set(payload.sid, { ...payload, startedAt: performance.now() })
         break
       case 'kicked':
         leaving = true

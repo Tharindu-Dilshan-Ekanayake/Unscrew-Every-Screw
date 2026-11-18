@@ -1,44 +1,77 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { runtime } from '../game/runtime'
-import { requestToss } from '../game/toss'
 import { useGame } from '../store/game'
+import Icon from './Icon'
+import StrokeText from './StrokeText'
 import { GRADIENTS } from './hud/style'
 
 /** Joystick travel radius, in CSS pixels. */
 const RADIUS = 56
+/** How far a finger on the view travels before it turns the view instead of unscrewing. */
+const DRAG_TO_LOOK = 14
+
+/** Points the touch aim at a finger, in `rect` (the view). */
+function aimAt(e, rect) {
+  const t = runtime.input.touchAim
+  t.active = true
+  t.x = e.clientX - rect.left
+  t.y = e.clientY - rect.top
+  t.nx = (t.x / rect.width) * 2 - 1
+  t.ny = 1 - (t.y / rect.height) * 2
+}
 
 function detectTouch() {
   if (typeof window === 'undefined') return false
   return window.matchMedia?.('(pointer: coarse)').matches || navigator.maxTouchPoints > 0
 }
 
-/** The chunky round look of the HUD's buttons, sized in CSS pixels. */
-const roundButton = (size, background) => ({
-  width: size,
-  height: size,
-  background,
-  border: '4px solid #111',
-})
+const roundButton = (size, background) => ({ width: size, height: size, background, border: '4px solid #111' })
+
+/** A button that stays "down" while a finger is on it (writes runtime.input[key]). */
+function HoldButton({ label, className, size, gradient, inputKey, children }) {
+  const set = (on) => {
+    runtime.input[inputKey] = on
+  }
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      className={`pp-btn pp-chunky absolute z-20 flex touch-none flex-col items-center justify-center rounded-full text-white ${className}`}
+      style={roundButton(size, gradient)}
+      onPointerDown={(e) => {
+        e.preventDefault()
+        e.currentTarget.setPointerCapture?.(e.pointerId)
+        set(true)
+      }}
+      onPointerUp={() => set(false)}
+      onPointerCancel={() => set(false)}
+      onLostPointerCapture={() => set(false)}
+    >
+      <span className="pp-gloss" style={{ borderRadius: `${size / 2}px ${size / 2}px ${size * 0.3}px ${size * 0.3}px` }} />
+      {children}
+    </button>
+  )
+}
 
 /**
- * On-screen controls for touch devices: a floating joystick that appears wherever the
- * left side of the screen is touched, a jump button and over it THROW, which throws your
- * phone for Skill (a tap on the game does too). Everything else is walking onto things:
- * the drop zone, a throw pad, a phone stand.
+ * On-screen controls for touch devices. Everywhere: a floating joystick wherever the left
+ * of the screen is touched, and JUMP. In a room: touch a screw and hold to unscrew it
+ * (and the ones around it, with an area tool); drag anywhere to look round instead; or
+ * aim the crosshair and hold USE.
  *
- * Writes straight into `runtime.input` and moves the knob through refs, so dragging
- * never re-renders React.
+ * Writes straight into `runtime.input` and moves the knob through refs, so dragging never
+ * re-renders React.
  */
 export function TouchControls() {
   const [isTouch, setIsTouch] = useState(detectTouch)
+  const inRun = useGame((s) => Boolean(s.profile.run?.active))
+  const panelOpen = useGame((s) => s.panel !== null)
   const baseRef = useRef(null)
   const knobRef = useRef(null)
   const active = useRef({ id: null, x: 0, y: 0 })
-  // No throwing at the drop zone (DROP is there), mid-drop or with a panel open.
-  const canThrow = useGame((s) => !s.zone.rollZone && !s.roll && !s.rollResult && !s.panel)
+  const look = useRef({ id: null, x: 0, y: 0 })
 
-  // A touchscreen laptop can start with a mouse; show the controls on first touch.
   useEffect(() => {
     if (isTouch) return undefined
     const onTouch = (e) => {
@@ -50,12 +83,19 @@ export function TouchControls() {
 
   useEffect(
     () => () => {
-      runtime.input.joyX = 0
-      runtime.input.joyY = 0
-      runtime.input.jump = false
+      Object.assign(runtime.input, { joyX: 0, joyY: 0, jump: false, use: false, lookX: 0, lookY: 0 })
+      runtime.input.touchAim.active = false
     },
     [],
   )
+
+  // Leaving a room (or opening a panel) lets go of USE, and of a screw held.
+  useEffect(() => {
+    if (!inRun || panelOpen) {
+      runtime.input.use = false
+      runtime.input.touchAim.active = false
+    }
+  }, [inRun, panelOpen])
 
   if (!isTouch) return null
 
@@ -87,8 +127,6 @@ export function TouchControls() {
       dy = (dy / len) * RADIUS
     }
     if (knobRef.current) knobRef.current.style.transform = `translate(${dx}px, ${dy}px)`
-    // Unit direction times strength, with a small dead zone so a resting thumb
-    // doesn't creep.
     const strength = Math.max(0, Math.min(len, RADIUS) / RADIUS - 0.08) / 0.92
     runtime.input.joyX = len > 0 ? (dx / Math.min(len, RADIUS)) * strength : 0
     runtime.input.joyY = len > 0 ? (-dy / Math.min(len, RADIUS)) * strength : 0
@@ -103,81 +141,72 @@ export function TouchControls() {
     if (baseRef.current) baseRef.current.style.opacity = '0.35'
   }
 
+  // The view: a finger held still unscrews what's under it; one that travels turns the
+  // view instead (for the rest of that touch).
+  const onLookDown = (e) => {
+    if (look.current.id !== null) return
+    e.currentTarget.setPointerCapture(e.pointerId)
+    const rect = e.currentTarget.getBoundingClientRect()
+    look.current = { id: e.pointerId, x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, looking: false, rect }
+    aimAt(e, rect)
+  }
+  const onLookMove = (e) => {
+    const l = look.current
+    if (l.id !== e.pointerId) return
+    if (!l.looking) {
+      if (Math.hypot(e.clientX - l.sx, e.clientY - l.sy) < DRAG_TO_LOOK) {
+        aimAt(e, l.rect)
+        return
+      }
+      l.looking = true
+      runtime.input.touchAim.active = false
+    }
+    runtime.input.lookX += e.clientX - l.x
+    runtime.input.lookY += e.clientY - l.y
+    l.x = e.clientX
+    l.y = e.clientY
+  }
+  const onLookUp = (e) => {
+    if (look.current.id !== e.pointerId) return
+    look.current.id = null
+    runtime.input.touchAim.active = false
+  }
+
   return (
     <>
-      <div
-        className="absolute bottom-0 left-0 z-10 h-[62%] w-[42%] touch-none"
-        onPointerDown={onDown}
-        onPointerMove={onMove}
-        onPointerUp={onUp}
-        onPointerCancel={onUp}
-      >
+      {inRun && (
+        <div
+          className="absolute inset-0 z-10 touch-none"
+          onPointerDown={onLookDown}
+          onPointerMove={onLookMove}
+          onPointerUp={onLookUp}
+          onPointerCancel={onLookUp}
+        />
+      )}
+      <div className="absolute bottom-0 left-0 z-10 h-[62%] w-[42%] touch-none" onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
         <div
           ref={baseRef}
-          // Resting low in the corner, clear of the menu tiles above it (and, held
-          // upright, of the Health bar below it): .touch-joy-rest in index.css.
           className="touch-joy-rest pointer-events-none absolute rounded-full border-4 border-white/70 bg-black/25"
-          style={{
-            width: RADIUS * 2,
-            height: RADIUS * 2,
-            opacity: 0.35,
-            left: RADIUS,
-          }}
+          style={{ width: RADIUS * 2, height: RADIUS * 2, opacity: 0.35, left: RADIUS }}
         >
-          <div
-            ref={knobRef}
-            className="absolute rounded-full border-4 border-black/40 bg-white/90 shadow-lg"
-            style={{ width: RADIUS, height: RADIUS, left: RADIUS / 2, top: RADIUS / 2 }}
-          />
+          <div ref={knobRef} className="absolute rounded-full border-4 border-black/40 bg-white/90 shadow-lg" style={{ width: RADIUS, height: RADIUS, left: RADIUS / 2, top: RADIUS / 2 }} />
         </div>
       </div>
 
-      {canThrow && (
-        <button
-          type="button"
-          aria-label="Throw your phone"
-          className="touch-throw pp-btn pp-chunky absolute z-20 flex touch-none flex-col items-center justify-center rounded-full text-white"
-          style={roundButton(96, GRADIENTS.goldButton)}
-          onPointerDown={(e) => {
-            e.preventDefault()
-            requestToss()
-          }}
-        >
-          <span className="pp-gloss" style={{ borderRadius: '48px 48px 28px 28px' }} />
-          <svg viewBox="0 0 24 24" width="34" height="34" fill="#fff" stroke="#111" strokeWidth="1.6" strokeLinejoin="round">
-            <rect x="7" y="2.5" width="10" height="19" rx="2.2" transform="rotate(-20 12 12)" />
-            <path d="M3 7.5l3 1.2M2.6 11.5l3 .4M3.4 15.4l2.8-.6" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" />
-          </svg>
-          <span style={{ fontSize: 15, fontWeight: 900, lineHeight: 1, marginTop: 1, letterSpacing: 0.5, textShadow: '0 2px 0 #111, 0 0 3px #111' }}>
-            THROW
+      {inRun && (
+        <HoldButton label="Unscrew" className="touch-use" size={104} gradient={GRADIENTS.goldButton} inputKey="use">
+          <Icon name="driver" size={44} />
+          <span style={{ fontSize: 16, lineHeight: 1 }}>
+            <StrokeText stroke={4}>USE</StrokeText>
           </span>
-        </button>
+        </HoldButton>
       )}
 
-      <button
-        type="button"
-        aria-label="Jump"
-        className="touch-jump pp-btn pp-chunky absolute z-20 flex touch-none items-center justify-center rounded-full text-white"
-        style={roundButton(70, GRADIENTS.slate)}
-        onPointerDown={(e) => {
-          e.preventDefault()
-          runtime.input.jump = true
-        }}
-        onPointerUp={() => {
-          runtime.input.jump = false
-        }}
-        onPointerCancel={() => {
-          runtime.input.jump = false
-        }}
-        onPointerLeave={() => {
-          runtime.input.jump = false
-        }}
-      >
-        <span className="pp-gloss" style={{ borderRadius: '35px 35px 20px 20px' }} />
+      <HoldButton label="Jump" className="touch-jump" size={70} gradient={GRADIENTS.slate} inputKey="jump">
         <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" strokeWidth="3.5">
           <path d="M5 15l7-7 7 7" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
-      </button>
+      </HoldButton>
     </>
   )
 }

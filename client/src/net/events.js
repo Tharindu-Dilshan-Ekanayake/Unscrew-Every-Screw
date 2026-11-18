@@ -1,18 +1,28 @@
-import { TIRES, TUTORIAL, WORLDS } from '@shared/balance'
+import { CHAPTERS } from '@shared/balance'
 import { formatNumber } from '@shared/format'
+import { screwPosition } from '@shared/layout'
 
 import { sfx } from '../audio/sfx'
-import { burst, queueTrainFx } from '../game/fx/fxQueue'
-import { runtime } from '../game/runtime'
-import { beginRoll, roll } from '../game/roll/rollControl'
+import { burst } from '../game/fx/fxQueue'
+import { spawnPopup, spawnScattered } from '../game/fx/popups'
+import { roomState, settleScrews, syncRoom, teammateTook } from '../game/roomState'
+import { holeQueue, sellQueue } from '../game/stage/aim'
+import { placePlayer, runtime } from '../game/runtime'
 import { getGame } from '../store/game'
+import { iconUrl } from '../ui/icons'
 import { fadeThrough } from '../ui/fade'
-import { refreshRemoteWorlds } from './remotePlayers'
+import { refreshRemoteVisibility } from './remotePlayers'
 
-/** A point above wherever you're watching: you in the lobby, or your falling phone. */
-const atPlayer = (dy = 1.2) => {
-  const p = roll.active ? roll.position : runtime.player.position
-  return { x: p.x, y: p.y + dy, z: p.z }
+const GOLD_TEXT = 'linear-gradient(180deg, #fffaa8 0%, #ffd52a 45%, #ff9c00 100%)'
+const CRYSTAL_TEXT = 'linear-gradient(180deg, #e6fdff 0%, #7ff0ff 45%, #22a6ff 100%)'
+const CASH_TEXT = 'linear-gradient(180deg, #e9ffd0 0%, #8dff5a 45%, #2fc43a 100%)'
+const _p = { x: 0, y: 0, z: 0 }
+
+/** A point a little in front of you, for popups and confetti. */
+function inFront(dy = 1.4) {
+  const p = runtime.player.position
+  const yaw = runtime.player.yaw
+  return { x: p.x + Math.sin(yaw) * 1.2, y: p.y + dy, z: p.z + Math.cos(yaw) * 1.2 }
 }
 
 /**
@@ -25,109 +35,109 @@ export function handleServerEvent(type, payload) {
     case 'profile': {
       const before = game.profile
       game.setProfile(payload.profile, payload.session)
-      if ((payload.profile.world || 0) !== (before.world || 0)) refreshRemoteWorlds()
-      // Celebrate the big moments, whatever caused them.
-      if (game.profileLoaded && payload.profile.rebirths > before.rebirths) {
-        sfx.rebirth()
-        burst({ ...atPlayer(), count: 60, speed: 9 })
-      } else if (game.profileLoaded && payload.profile.ownedTires.length > before.ownedTires.length) {
-        // A new phone: a shower of confetti and its name up in lights.
-        sfx.buy()
-        sfx.wins()
-        burst({ ...atPlayer(2.5), count: 60, palette: 'confetti', speed: 9 })
-        const tire = TIRES.find((t) => t.id === payload.profile.equippedTire)
-        // The first phone bought ends the tutorial: say so too.
-        const done = before.tutorialStep < TUTORIAL.length && payload.profile.tutorialStep >= TUTORIAL.length
-        if (tire) game.showToast(`NEW PHONE: ${tire.name}!${done ? ' Tutorial complete - have fun!' : ''}`)
+      // A new room (or into / out of a run): the screws are rebuilt from the save.
+      syncRoom(payload.profile)
+      const runOf = (p) => (p.run?.active ? p.run.runId || 'run' : '')
+      if (runOf(before) !== runOf(payload.profile)) refreshRemoteVisibility()
+      if (game.profileLoaded && payload.profile.skins.length > before.skins.length) sfx.buy()
+      break
+    }
+
+    case 'teleport':
+      // Moved at once (so nothing in the old place - a wall, a collider - can catch you on
+      // the way); the white flash only covers the cut.
+      placePlayer(payload.x, payload.z, payload.yaw)
+      fadeThrough(() => {})
+      break
+
+    case 'parties': {
+      const mine = payload.mine ? { ...payload.mine, endsAt: Date.now() + payload.mine.startsIn } : null
+      game.setParties(mine)
+      break
+    }
+
+    case 'pads': {
+      const now = Date.now()
+      game.setPads((Array.isArray(payload) ? payload : []).map((p) => ({ ...p, endsAt: p.startsIn === null ? null : now + p.startsIn })))
+      break
+    }
+
+    case 'screwsGone': {
+      // A teammate's screws: holes for us too.
+      for (const i of teammateTook(payload.ids || [])) holeQueue.push(i)
+      game.patchRun({ left: payload.left })
+      break
+    }
+
+    case 'unscrewed': {
+      settleScrews(payload.ok, payload.bad, payload.taken)
+      const crystalsEach = payload.crystal ? Math.max(1, Math.round((payload.crystals - game.profile.crystals) / payload.crystal)) : 0
+      game.patchRun({ bag: payload.bag, bagValue: payload.bagValue, left: payload.left })
+      if (payload.crystals !== game.profile.crystals || payload.screws !== game.profile.stats.screws) {
+        const latest = getGame().profile
+        game.patchProfile({ crystals: payload.crystals, stats: { ...latest.stats, screws: payload.screws ?? latest.stats.screws } })
+      }
+      const layout = roomState.layout
+      if (layout && payload.ok.length && (payload.gold || payload.crystal)) {
+        // Find the special ones among them for their popup.
+        for (const i of payload.ok) {
+          const kind = roomState.kinds?.[i]
+          if (kind !== 1 && kind !== 2) continue
+          screwPosition(layout, i, _p)
+          if (kind === 1) {
+            sfx.gold()
+            spawnPopup('GOLD!', _p, { gradient: GOLD_TEXT, scale: 1.2 })
+          } else {
+            sfx.crystal()
+            spawnPopup(`+${crystalsEach}`, _p, { gradient: CRYSTAL_TEXT, iconUrl: iconUrl('crystal'), scale: 1.25 })
+            burst({ ..._p, count: 18, speed: 4, palette: 'crystal' })
+          }
+        }
       }
       break
     }
 
-    case 'train':
-      game.patchProfile({
-        health: payload.health,
-        level: payload.level,
-        // Throws off the pads aren't pad training.
-        ...(payload.source === 'pad' ? { lastPad: payload.pad } : {}),
-      })
-      queueTrainFx(payload)
-      if (payload.leveledUp) {
-        sfx.levelUp()
-        burst({ ...atPlayer(1.8), count: 24, palette: 'power', speed: 6 })
-      }
+    case 'sold':
+      sfx.sell(payload.screws)
+      if (sellQueue.length < 4) sellQueue.push(payload.screws || 1)
+      spawnScattered(`+$${formatNumber(payload.cash)}`, { gradient: CASH_TEXT, iconUrl: iconUrl('cash'), scale: 1.4 })
+      burst({ ...inFront(1), count: 30, speed: 6, palette: 'gold' })
       break
 
-    case 'roll': {
-      // (How well you threw shows as the phone leaves your hand: rollControl.)
-      beginRoll(payload)
+    case 'roomClear':
+      sfx.doorOpen()
+      game.showToast('ROOM CLEARED! The exit is open!')
+      burst({ ...inFront(2), count: 50, speed: 8, palette: 'confetti' })
+      break
+
+    case 'room': {
+      sfx.whoosh()
+      const run = getGame().profile.run
+      const chapter = run && CHAPTERS.find((c) => c.id === run.chapter)
+      const room = chapter?.rooms[payload.room]
+      if (room) game.showToast(`ROOM ${payload.room + 1}: ${room.name.toUpperCase()}`)
       break
     }
+
+    case 'chapterClear':
+      sfx.fanfare()
+      game.setClear({ ...payload, id: Date.now() })
+      break
 
     case 'quest':
-      // One of today's quests finished: a chime and a nudge to claim it.
-      sfx.levelUp()
+      sfx.reward()
       game.showToast(`QUEST COMPLETE: ${payload.text}! Claim it in Quests`)
       break
 
-    case 'streak':
-      // Played past midnight: the streak's next day starts now.
-      sfx.wins()
-      game.showToast(`DAY ${payload.days} STREAK! x${payload.multiplier.toFixed(1)} Wins on every drop`)
-      break
-
-    case 'pack':
-      sfx.buy()
-      burst({ ...atPlayer(2), count: 30, palette: 'power', speed: 7 })
-      break
-
-    case 'hatch':
-      game.setHatch({ eggId: payload.eggId, pets: payload.pets, id: Date.now() })
-      if (payload.eggId) {
-        setTimeout(sfx.crack, 1100)
-        setTimeout(sfx.reveal, 1250)
-      } else {
-        sfx.reveal()
-      }
-      break
-
-    case 'offline':
-      game.openPanel('offline', payload)
-      break
-
     case 'badge':
-      // (After the moment it was earned in - usually a launch - so that frame stays light.)
-      setTimeout(() => sfx.wins(), 1200)
+      setTimeout(() => sfx.reward(), 600)
+      game.showToast(`BADGE: ${payload.name}`)
       break
-
-    case 'star': {
-      // Palm Beach's Secret Star, found: a shower of gold and the news.
-      sfx.wins()
-      sfx.levelUp()
-      burst({ ...atPlayer(2), count: 70, palette: 'gold', speed: 10 })
-      game.showToast('SECRET STAR FOUND! x2 SKILL FOREVER!')
-      break
-    }
-
-    case 'world': {
-      // Through the portal: a flash of white while the new world's sky and track go
-      // in (GameScene follows profile.world), and a fanfare.
-      fadeThrough(() => {})
-      sfx.rebirth()
-      burst({ ...atPlayer(2), count: 60, palette: 'confetti', speed: 9 })
-      const world = WORLDS[payload.world]
-      game.showToast(
-        payload.world === 1
-          ? `WELCOME TO ${world.name.toUpperCase()}! x${world.wins} Wins on every drop!${payload.first ? ' A Secret Star is hidden here...' : ''}`
-          : `Back in ${world.name}!`,
-      )
-      break
-    }
 
     case 'reward':
-      // A rewarded ad or a Gems purchase landed.
-      sfx.buy()
-      burst({ ...atPlayer(2), count: 40, palette: 'gold', speed: 8 })
-      game.showToast(`${payload.label}${payload.wins ? ` +${formatNumber(payload.wins)} Wins` : ''}!`)
+      sfx.reward()
+      burst({ ...inFront(2), count: 40, speed: 7, palette: 'crystal' })
+      game.showToast(`${payload.label}${payload.crystals ? ` +${formatNumber(payload.crystals)} Crystals` : ''}!`)
       break
 
     default:

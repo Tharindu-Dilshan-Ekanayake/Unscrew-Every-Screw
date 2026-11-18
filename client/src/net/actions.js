@@ -18,39 +18,34 @@ export function send(type, payload) {
 
 export const actions = {
   /**
-   * Launches you; only counts on the LAUNCH PAD (the LET GO! button sends it).
-   * `accuracy` (0-1) is the stretch meter when you let go; leave it out for Auto Launch.
+   * SOLO: CREATE (`action` 'start', a new run of `chapter` at `diff`) or LOAD (`action`
+   * 'load', your saved run) - after a short countdown, which LEAVE calls off.
    */
-  roll: (accuracy) => send('roll', Number.isFinite(accuracy) ? { accuracy } : undefined),
-  enterPad: (pad) => send('enterPad', { pad }),
-  leavePad: () => send('leavePad'),
-  /** One throw of your phone: Skill (game/toss.js). */
-  toss: () => send('toss'),
-  rebirth: () => send('rebirth'),
-  skipRebirth: () => send('skipRebirth'),
-  buyTire: (id) => send('buyTire', { id }),
-  equipTire: (id) => send('equipTire', { id }),
-  /** Buys Health pack `index` (0-2) from the bar under the level. */
-  buyPack: (index) => send('buyPack', { index }),
-  hatch: (eggId, count = 1) => send('hatch', { eggId, count }),
-  openEggItem: (itemId) => send('openEggItem', { itemId }),
-  equipPet: (uid) => send('equipPet', { uid }),
-  unequipPet: (uid) => send('unequipPet', { uid }),
-  equipBestPets: () => send('equipBest'),
-  deletePet: (uid) => send('deletePet', { uid }),
-  usePotion: (itemId) => send('usePotion', { itemId }),
-  claimDaily: (day) => send('claimDaily', { day }),
-  claimPlaytime: (index) => send('claimPlaytime', { index }),
-  claimFreeReward: () => send('claimFreeReward'),
-  /** Claims today's finished quest `index` (0-2), or the bonus chest once all three are. */
+  createParty: (chapter, diff, action = 'start') => send('createParty', { chapter, diff, action }),
+  leaveParty: () => send('leaveParty'),
+  /** The host: start now, with whoever's in. */
+  startParty: () => send('startParty'),
+  /** CREATE: a new run of `chapter` (id) at difficulty `diff` (0-2). */
+  startRun: (chapter, diff) => send('startRun', { chapter, diff }),
+  /** LOAD: back into the saved run. */
+  loadRun: () => send('loadRun'),
+  /** Back to the lobby (the run stays saved). */
+  leaveRun: () => send('leaveRun'),
+  /** Screws taken: by your hands, or by your Helper Drone (`drone`). */
+  unscrew: (ids, drone = false) => send('unscrew', drone ? { ids, drone: true } : { ids }),
+  sell: () => send('sell'),
+  buyTool: (id) => send('buyTool', { id }),
+  equipTool: (id) => send('equipTool', { id }),
+  upgrade: (stat) => send('upgrade', { stat }),
+  /** Through the open door. */
+  nextRoom: () => send('nextRoom'),
+  buyPerk: (id) => send('buyPerk', { id }),
+  buySkin: (id) => send('buySkin', { id }),
+  equipSkin: (id) => send('equipSkin', { id }),
+  claimDaily: () => send('claimDaily'),
+  /** Claims today's finished quest `index` (0-2), or the bonus once all three are. */
   claimQuest: (index) => send('claimQuest', { index }),
   claimQuestBonus: () => send('claimQuestBonus'),
-  setSetting: (key, value) => send('setting', { key, value }),
-  portal: () => send('portal'),
-  /** Picks up Palm Beach's Secret Star (the authority checks you're at it). */
-  findStar: () => send('findStar'),
-  /** Buys a shop item with Wins; see shop.js. */
-  purchase: (productId) => send('purchase', { productId }),
   /** A rewarded ad Boxity says was watched; the server verifies the token. */
   adReward: (placement, rewardToken) => send('adReward', { placement, rewardToken }),
   /** Asks the server to apply any Gems purchases Boxity has confirmed. */
