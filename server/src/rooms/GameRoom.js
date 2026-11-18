@@ -16,7 +16,7 @@ import { activePlayers, liveRooms } from '../registry.js'
 import { issueSaveTicket } from '../saveTickets.js'
 import { GameState, PlayerState } from './schema.js'
 
-const MAX_CLIENTS = 10
+const MAX_CLIENTS = 20
 const RECONNECT_SECONDS = 20
 const AUTOSAVE_MS = 30_000
 /** State patches to clients, and the session simulation, per second. */

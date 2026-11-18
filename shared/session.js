@@ -14,6 +14,7 @@ import {
   buyUpgrade,
   claimDaily,
   clearChapter,
+  countsForProgress,
   crystalsPerScrew,
   droneRate,
   endTeamRun,
@@ -146,7 +147,13 @@ export class PlayerSession {
     this.emit('profile', { profile: this.profile, session: this.session })
   }
 
+  /** In a team run: just for fun, so nothing of it is kept (see logic countsForProgress). */
+  get teamRun() {
+    return !countsForProgress(this.profile)
+  }
+
   badge(id) {
+    if (this.teamRun) return
     const badge = awardBadge(this.profile, id)
     if (badge) {
       this.dirty = true
@@ -155,10 +162,12 @@ export class PlayerSession {
   }
 
   tutorial(event) {
+    if (this.teamRun) return
     if (advanceTutorial(this.profile, event)) this.dirty = true
   }
 
   quest(type, amount, now) {
+    if (this.teamRun) return
     const finished = progressQuests(this.profile, type, amount, now)
     if (amount > 0) this.questsChanged = true
     if (finished.length) this.dirty = true
@@ -309,7 +318,7 @@ export class PlayerSession {
         run.take(i)
         ok.push(i)
         mine.screws += 1
-        this.profile.stats.screws += 1
+        if (!this.teamRun) this.profile.stats.screws += 1
         if (kind === SCREW_CRYSTAL) {
           crystal += 1
           crystals += crystalsEach
@@ -323,9 +332,12 @@ export class PlayerSession {
       }
       if (ok.length) {
         run.commit()
+        // Crystals unscrewed are kept even in a team run (the one thing a team run keeps).
         this.profile.crystals += crystals
-        this.profile.stats.gold += gold
-        this.profile.stats.crystal += crystal
+        if (!this.teamRun) {
+          this.profile.stats.gold += gold
+          this.profile.stats.crystal += crystal
+        }
         const total = this.profile.stats.screws
         this.quest('screws', ok.length, now)
         if (gold) this.quest('gold', gold, now)
@@ -407,7 +419,7 @@ export class PlayerSession {
       if (!atDoor(run.layout, p.x, p.z, STAND_SLACK)) return
       const members = [...run.members]
       for (const m of members) {
-        m.profile.stats.rooms += 1
+        if (!m.teamRun) m.profile.stats.rooms += 1
         m.quest('rooms', 1, now)
         m.badge('firstRoom')
       }
@@ -497,7 +509,7 @@ export class PlayerSession {
    * the run's own clock. Call at a steady rate.
    */
   tick(dt, now) {
-    this.profile.stats.playtime += dt
+    if (!this.teamRun) this.profile.stats.playtime += dt
     if (this.run && this.run.members[0] === this) this.run.tick(dt)
     this.minuteTimer += dt
     if (this.minuteTimer >= 60) {

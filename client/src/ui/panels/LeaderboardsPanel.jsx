@@ -11,7 +11,8 @@ const BOARDS = [
   { id: 'screws', title: 'Screws', format: formatNumber, mine: (p) => p.stats.screws },
   { id: 'rooms', title: 'Rooms', format: formatNumber, mine: (p) => p.stats.rooms },
   { id: 'chapters', title: 'Chapters', format: formatNumber, mine: (p) => p.stats.chapters },
-  { id: 'playtime', title: 'Playtime', format: (v) => formatDuration(v * 60 * 1000), mine: (p) => Math.floor(p.stats.playtime / 60) },
+  // Seconds played, on the server's board and yours.
+  { id: 'playtime', title: 'Playtime', format: (v) => formatDuration(v * 1000), mine: (p) => Math.floor(p.stats.playtime) },
 ]
 
 /**

@@ -2,6 +2,8 @@ import { useFrame, useThree } from '@react-three/fiber'
 import { useEffect, useRef } from 'react'
 import { Vector3 } from 'three'
 
+import { GARAGE } from '@shared/world'
+
 import { getBloxityState } from '../bloxity/store'
 import { placeLocalBubble } from './remote/nameplates'
 import { runtime } from './runtime'
@@ -27,6 +29,25 @@ const LOOK_SMOOTHING = 14
 
 const _desired = new Vector3()
 const _target = new Vector3()
+
+/** How close the camera may come to the garage's walls and roof. */
+const WALL_MARGIN = 0.9
+
+/**
+ * Pulls `desired` in along the line from `target` until it's inside the garage: the
+ * camera comes closer rather than ending up outside a wall looking at its back.
+ */
+function keepInside(target, desired) {
+  let t = 1
+  const limit = (from, to, min, max) => {
+    if (to < min) t = Math.min(t, (min - from) / (to - from))
+    else if (to > max) t = Math.min(t, (max - from) / (to - from))
+  }
+  limit(target.x, desired.x, GARAGE.minX + WALL_MARGIN, GARAGE.maxX - WALL_MARGIN)
+  limit(target.z, desired.z, GARAGE.minZ + WALL_MARGIN, GARAGE.maxZ - WALL_MARGIN)
+  limit(target.y, desired.y, -Infinity, GARAGE.height - 2.2)
+  if (t < 1) desired.lerpVectors(target, desired, Math.max(0, t))
+}
 
 /**
  * Third-person orbit camera around the player.
@@ -141,6 +162,8 @@ export function FollowCamera() {
       Math.max(_target.y + Math.sin(pitch) * distance, 0.6),
       _target.z + Math.cos(yaw) * horizontal,
     )
+
+    keepInside(_target, _desired)
 
     // After a teleport (back from a run), jump straight there rather than swoop.
     if (runtime.camera.snap) {

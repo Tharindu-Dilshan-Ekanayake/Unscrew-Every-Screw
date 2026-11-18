@@ -36,9 +36,12 @@ class ScrewDrawer {
   constructor(layout, head, screwColor) {
     const settings = getQuality()
     this.layout = layout
-    this.geometry = createHeadGeometry(settings.screwSegments)
-    this.texture = createHeadTexture(head, settings.maxTexture >= 1024 ? 256 : 128)
-    this.material = createScrewMaterial(this.texture, settings.screwSegments > 8)
+    // As round as the preset allows, but no more than the room can afford: a head costs
+    // about 5 triangles a side, and all the room's heads together stay under budget.
+    const affordable = Math.floor(settings.screwTriangles / (5 * Math.max(1, layout.count)))
+    this.geometry = createHeadGeometry(Math.max(8, Math.min(settings.screwSegments, affordable)))
+    this.texture = createHeadTexture(head, settings.maxTexture >= 1024 ? 512 : 256)
+    this.material = createScrewMaterial(this.texture, true)
     this.base = new Color(screwColor)
     this.quats = layout.surfaces.map((s) => new Quaternion().setFromUnitVectors(UP, _n.fromArray(s.normal)))
     // One mesh per bucket (floor, each wall, the ceiling, all the pillars): a handful of

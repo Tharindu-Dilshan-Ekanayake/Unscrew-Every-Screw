@@ -10,7 +10,7 @@ import { hideNameplatesFrom, NAMEPLATE_POOL_SIZE, placeNameplate } from './namep
 
 /** Remote players are drawn this far in the past, so 10 Hz updates interpolate. */
 const INTERP_DELAY_MS = 110
-const MAX_REMOTES = 10
+const MAX_REMOTES = 20
 const PARTS = 6
 const S = 0.36
 

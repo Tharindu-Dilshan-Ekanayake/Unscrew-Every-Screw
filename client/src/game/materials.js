@@ -161,8 +161,14 @@ const fragmentBody = /* glsl */ `
       if (!isTop) {
         vec2 cell = vec2(suv.x / 2.2, (vToyPos.y - 0.6) / 2.6);
         vec2 f = fract(cell);
-        float win = step(0.18, f.x) * step(f.x, 0.82) * step(0.22, f.y) * step(f.y, 0.86);
-        float frame = step(0.12, f.x) * step(f.x, 0.88) * step(0.16, f.y) * step(f.y, 0.92);
+        // Soft edges a pixel wide (no shimmer at a distance); far off, the grid fades to its average.
+        vec2 ww = fwidth(cell);
+        vec2 e = max(ww, vec2(0.002));
+        float win = smoothstep(0.18 - e.x, 0.18 + e.x, f.x) * smoothstep(0.82 + e.x, 0.82 - e.x, f.x) * smoothstep(0.22 - e.y, 0.22 + e.y, f.y) * smoothstep(0.86 + e.y, 0.86 - e.y, f.y);
+        float frame = smoothstep(0.12 - e.x, 0.12 + e.x, f.x) * smoothstep(0.88 + e.x, 0.88 - e.x, f.x) * smoothstep(0.16 - e.y, 0.16 + e.y, f.y) * smoothstep(0.92 + e.y, 0.92 - e.y, f.y);
+        float far = smoothstep(0.25, 0.6, max(ww.x, ww.y));
+        win = mix(win, 0.42, far);
+        frame = mix(frame, 0.62, far);
         // No windows in the lobby's bottom strip; the city far below the cliff has them all the way down.
         float lowest = vToyPos.y < -20.0 ? 1.0 : step(0.0, vToyPos.y - 0.6);
         col = mix(col, vec3(0.97), frame * lowest);
@@ -176,7 +182,11 @@ const fragmentBody = /* glsl */ `
     } else if (style < 6.0) {
       totalEmissiveRadiance += col * 0.75;
     } else if (style < 7.0) {
-      float band = step(0.5, fract(vToyPos.y * 0.5));
+      float sy = vToyPos.y * 0.5;
+      float bw = max(fwidth(sy), 0.002);
+      float fy = fract(sy);
+      float band = smoothstep(0.5 - bw, 0.5 + bw, fy) * smoothstep(1.0 + bw, 1.0 - bw, fy);
+      band = mix(band, 0.5, smoothstep(0.25, 0.6, bw));
       col = mix(col, vec3(1.0), band);
       col *= toyTile(sp);
     } else if (style < 8.0) {

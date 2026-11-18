@@ -50,7 +50,7 @@ test('Boxity URLs come only from the environment: none written down', () => {
   assert.equal(local.portalUrl, null)
   assert.equal(local.staticUrl, null)
   assert.equal(local.playHost, '')
-  assert.equal(local.gameSlug, '1-phone-drop')
+  assert.equal(local.gameSlug, 'unscrew-every-screw')
   assert.equal(local.hosted, false)
   assert.equal(hosted.apiUrl, 'https://api.stage.example', 'trailing slash trimmed')
   assert.equal(hosted.gameSlug, 'screwball')

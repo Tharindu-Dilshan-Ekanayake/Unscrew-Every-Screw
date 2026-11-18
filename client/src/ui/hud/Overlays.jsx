@@ -140,7 +140,7 @@ function PadCard({ live }) {
           <span className="flex items-center justify-center" style={{ gap: u(6), fontSize: u(22) }}>
             <Icon name="lock" size={u(28)} />
             <StrokeText stroke={u(5)} fill="#7dffb4" style={{ whiteSpace: 'normal' }}>
-              Locked for you - your team carries you, and clearing it unlocks it!
+              Not reached yet - your team carries you (just for fun: it won't unlock)
             </StrokeText>
           </span>
         )}
@@ -315,12 +315,18 @@ export function ChapterClear() {
   const setClear = useGame((s) => s.setClear)
   if (!clear) return null
   const chapter = CHAPTERS.find((c) => c.id === clear.chapter)
-  const rows = [
-    ['clock', 'Time', formatTime(clear.time) + (clear.newBest ? '  NEW BEST!' : '')],
-    ['trophy', clear.team ? 'Best (solo)' : 'Best', clear.best ? formatTime(clear.best) : '-'],
-    ['screw', 'Screws', formatNumber(clear.screws)],
-    ['crystal', 'Crystals', `+${formatNumber(clear.crystals)}`],
-  ]
+  // A team run is just for fun: its time and screws, nothing earned or saved.
+  const rows = clear.team
+    ? [
+        ['clock', 'Team time', formatTime(clear.time)],
+        ['screw', 'Screws', formatNumber(clear.screws)],
+      ]
+    : [
+        ['clock', 'Time', formatTime(clear.time) + (clear.newBest ? '  NEW BEST!' : '')],
+        ['trophy', 'Best', clear.best ? formatTime(clear.best) : '-'],
+        ['screw', 'Screws', formatNumber(clear.screws)],
+        ['crystal', 'Crystals', `+${formatNumber(clear.crystals)}`],
+      ]
   return (
     <div className="pp-font pointer-events-auto absolute inset-0 z-40 flex items-center justify-center" style={{ background: 'rgba(5, 8, 16, 0.6)' }}>
       <div className="pp-panel-in flex flex-col items-center text-center" style={{ padding: u(34), borderRadius: u(18), background: 'linear-gradient(180deg, #2a3350, #151a2a)', border: `${u(6)} solid #ffd23a`, width: `min(${u(760)}, 92vw)` }}>
@@ -345,6 +351,13 @@ export function ChapterClear() {
             </StrokeText>
           </div>
         ))}
+        {clear.team && (
+          <span style={{ fontSize: u(26), marginTop: u(10) }}>
+            <StrokeText stroke={u(5)} fill="#cfd8ff" style={{ whiteSpace: 'normal' }}>
+              Team play is just for fun - only the crystals you unscrewed are kept. Your solo run is waiting!
+            </StrokeText>
+          </span>
+        )}
         {(clear.unlockedChapter || clear.unlockedDifficulty) && (
           <span style={{ fontSize: u(32), marginTop: u(10) }}>
             <StrokeText stroke={u(7)} gradient={GRADIENTS.cash} style={{ whiteSpace: 'normal' }}>

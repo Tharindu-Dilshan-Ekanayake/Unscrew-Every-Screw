@@ -22,8 +22,9 @@ export const FOG = {
 
 /** The yard's palette. */
 export const PALETTE = {
-  paving: '#e6d6b8',
-  pavingEdge: '#cbb48c',
+  // Garage concrete.
+  paving: '#cfccc5',
+  pavingEdge: '#aaa59a',
   lawn: '#5cc659',
   factory: '#25b5a8',
   factoryDark: '#147d74',

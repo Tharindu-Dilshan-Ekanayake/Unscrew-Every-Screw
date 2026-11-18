@@ -25,7 +25,7 @@ export const useGame = create((set) => ({
     code: null,
     isPrivate: false,
     players: 1,
-    maxPlayers: 10,
+    maxPlayers: 20,
     message: null,
   },
   leaderboards: null,

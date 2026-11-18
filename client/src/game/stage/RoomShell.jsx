@@ -20,10 +20,12 @@ const WHEEL = new TorusGeometry(1, 0.16, 6, 16)
  */
 function pillar(b, p, h, theme, themeId) {
   const s = p.size
-  if (themeId === 'workshop') b.box(p.x, h / 2, p.z, s, h, s, theme.beam, STYLE.PARQUET)
-  else if (themeId === 'boiler') b.box(p.x, h / 2, p.z, s, h, s, theme.pillar || '#8a4632', STYLE.PLATE)
+  // A touch short of the ceiling, so its top never shares a face with its cap.
+  const ph = h - 0.03
+  if (themeId === 'workshop') b.box(p.x, ph / 2, p.z, s, ph, s, theme.beam, STYLE.PARQUET)
+  else if (themeId === 'boiler') b.box(p.x, ph / 2, p.z, s, ph, s, theme.pillar || '#8a4632', STYLE.PLATE)
   else {
-    b.box(p.x, h / 2, p.z, s, h, s, theme.pillar || '#eef4f8', STYLE.TILES)
+    b.box(p.x, ph / 2, p.z, s, ph, s, theme.pillar || '#eef4f8', STYLE.TILES)
     // Glowing strips down its corners (the screws keep clear of the edges).
     for (const dx of [-1, 1]) for (const dz of [-1, 1]) b.box(p.x + (dx * s) / 2, h / 2, p.z + (dz * s) / 2, 0.05, h - 0.5, 0.05, theme.trim, STYLE.GLOW)
   }
@@ -71,13 +73,14 @@ export function RoomShell({ layout, theme, themeId }) {
       b.box(x, h - 0.06, z, sx, 0.12, sz, theme.trim, STYLE.SMOOTH)
     }
     for (const sx of [-1, 1]) for (const sz of [-1, 1]) b.box((sx * w) / 2, h / 2, (sz * d) / 2, 0.16, h, 0.16, theme.trim, STYLE.SMOOTH)
-    // The door frame, in the chapter's accent colour.
-    b.box(-dw / 2 - 0.09, dh / 2, -d / 2 + 0.04, 0.18, dh + 0.1, 0.22, theme.accent, STYLE.SMOOTH)
-    b.box(dw / 2 + 0.09, dh / 2, -d / 2 + 0.04, 0.18, dh + 0.1, 0.22, theme.accent, STYLE.SMOOTH)
-    b.box(0, dh + 0.09, -d / 2 + 0.04, dw + 0.36, 0.18, 0.22, theme.accent, STYLE.SMOOTH)
+    // The door frame, in the chapter's accent colour - reaching a hair into the doorway, so
+    // it never shares a face with the wall's opening.
+    b.box(-dw / 2 - 0.075, dh / 2, -d / 2 + 0.04, 0.18, dh + 0.1, 0.22, theme.accent, STYLE.SMOOTH)
+    b.box(dw / 2 + 0.075, dh / 2, -d / 2 + 0.04, 0.18, dh + 0.1, 0.22, theme.accent, STYLE.SMOOTH)
+    b.box(0, dh + 0.075, -d / 2 + 0.04, dw + 0.37, 0.18, 0.22, theme.accent, STYLE.SMOOTH)
     // The corridor behind it, lit at the far end.
     const cz = -d / 2 - T - 2
-    b.box(0, -0.15, cz, dw + 0.6, 0.3, 4, theme.corridor, STYLE.PLATE)
+    b.box(0, -0.15, cz, dw + 0.58, 0.3, 4, theme.corridor, STYLE.PLATE)
     b.box(0, dh + 0.3, cz, dw + 0.6, 0.3, 4, theme.corridor, STYLE.SMOOTH)
     b.box(-dw / 2 - 0.15, dh / 2, cz, 0.3, dh + 0.6, 4, theme.corridor, STYLE.SMOOTH)
     b.box(dw / 2 + 0.15, dh / 2, cz, 0.3, dh + 0.6, 4, theme.corridor, STYLE.SMOOTH)

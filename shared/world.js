@@ -18,6 +18,9 @@ export const SPAWN = { x: 0, z: 17 }
 /** The walkable yard. */
 export const PLAZA = { minX: -30, maxX: 30, minZ: -27, maxZ: 28 }
 
+/** The giant screw garage the yard stands in: its walls' inside faces, and their height. */
+export const GARAGE = { minX: -40, maxX: 40, minZ: -44, maxZ: 40, height: 15 }
+
 /** The factory front (north), with a goods elevator in the middle. */
 export const FACTORY = { minX: -16, maxX: 16, minZ: -40, maxZ: -26, height: 13 }
 /** The (shut) goods elevator in the factory front, and the apron in front of it. */
@@ -30,7 +33,7 @@ export const ELEVATOR = { minX: -3.4, maxX: 3.4, minZ: -26, maxZ: -20.5 }
  * seating 4: whoever stands on one takes a seat, and once every seat is taken that
  * chapter's run starts by itself (shared/pads.js). Flat discs: nothing to walk round.
  */
-export const SOLO_PAD = { id: 'solo', size: 1, x: 0, z: -8.6, radius: 3.4 }
+export const SOLO_PAD = { id: 'solo', size: 1, x: 0, z: -7.6, radius: 5.0 }
 /** The team sections, one per chapter: `x`, each section's middle. */
 export const PAD_SECTIONS = [
   { chapter: 'workshop', x: -15 },
@@ -85,6 +88,7 @@ export const CROSSROADS = { x: 0, z: -2 }
 export const LEADERBOARDS = [
   { id: 'screws', x: -27.5, z: 10, yaw: Math.PI / 2 },
   { id: 'rooms', x: 27.5, z: 10, yaw: -Math.PI / 2 },
+  { id: 'playtime', x: -27.5, z: 22.5, yaw: Math.PI / 2 },
 ]
 
 /** Conveyor belts either side of the elevator, crates riding them into the factory. */
@@ -122,7 +126,6 @@ export const CRATES = [
   [27.6, -24.6, 1.3],
   [26, -25.6, 1],
   [26.2, 21, 1.2],
-  [-26.2, 21, 1.1],
 ]
 
 /** Solid things: you walk round them. */
@@ -147,8 +150,7 @@ export const STATIC_COLLIDERS = [
   { minX: -24.5, maxX: -22, minZ: -10, maxZ: -2 },
   { minX: 22, maxX: 24.5, minZ: -10, maxZ: -2 },
   // Leaderboards and their posts.
-  { minX: -28.6, maxX: -27, minZ: 5.6, maxZ: 14.4 },
-  { minX: 27, maxX: 28.6, minZ: 5.6, maxZ: 14.4 },
+  ...LEADERBOARDS.map((b) => (b.x < 0 ? { minX: -28.6, maxX: -27, minZ: b.z - 4.4, maxZ: b.z + 4.4 } : { minX: 27, maxX: 28.6, minZ: b.z - 4.4, maxZ: b.z + 4.4 })),
 ]
 
 export const inRect = (r, x, z, margin = 0) =>

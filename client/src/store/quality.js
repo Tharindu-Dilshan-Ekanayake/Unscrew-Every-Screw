@@ -4,25 +4,34 @@ import { create } from 'zustand'
  * Graphics quality presets. Every visual feature reads its settings from here rather
  * than deciding for itself, so dropping a preset reliably sheds load everywhere.
  *
- * LOW is the mobile / weak-PC baseline: no realtime shadows, no particles, no
- * post-processing, short view distance and textures capped at 512px.
+ * LOW is the baseline everyone starts on: no realtime shadows, no particles, no
+ * post-processing, native resolution and textures capped at 512px - but with the cheap
+ * things that make it look nearly as good as MEDIUM (antialiasing, shiny screws, flying
+ * screws, rounder screw heads where the room can afford them, far fog).
  */
 export const QUALITY_LEVELS = ['LOW', 'MEDIUM', 'HIGH']
 
 export const PRESETS = {
   LOW: {
     dpr: 1,
-    antialias: false,
+    // MSAA at native resolution: cheap (especially on phones' tiled GPUs) and the biggest
+    // single step towards MEDIUM's look. If FPS still falls, resolution steps down (RENDER_SCALES).
+    antialias: true,
     /** 'blob' = fake contact shadows only; 'realtime' = shadow-mapped sun (lobby only). */
     shadows: 'blob',
     shadowMapSize: 0,
     particles: false,
-    viewDistance: 160,
-    fogNear: 60,
-    /** Sides on a screw head: the biggest triangle cost in a room (x ~1,200 screws). */
-    screwSegments: 8,
-    /** Flying screws, sparks and the drone's lights. */
-    screwFx: false,
+    viewDistance: 200,
+    fogNear: 90,
+    /**
+     * Sides on a screw head: the biggest triangle cost in a room (x ~1,200 screws). The
+     * most a room uses - big rooms take fewer to stay in budget (ScrewField).
+     */
+    screwSegments: 10,
+    /** Most triangles all of a room's screw heads may take (the screen's budget is 100k on LOW). */
+    screwTriangles: 70_000,
+    /** Screws flying into the bag and into the hopper (sparks need `particles` too). */
+    screwFx: true,
     /** Max side of any generated texture. */
     maxTexture: 512,
     /**
@@ -43,6 +52,7 @@ export const PRESETS = {
     viewDistance: 260,
     fogNear: 100,
     screwSegments: 12,
+    screwTriangles: 160_000,
     screwFx: true,
     maxTexture: 1024,
     remoteDrawDistance: 150,
@@ -59,6 +69,7 @@ export const PRESETS = {
     viewDistance: 360,
     fogNear: 140,
     screwSegments: 16,
+    screwTriangles: 240_000,
     screwFx: true,
     maxTexture: 1024,
     remoteDrawDistance: 150,
@@ -96,20 +107,13 @@ function readSaved() {
 }
 
 /**
- * Phones and small CPUs (4 cores or fewer) start on LOW, the safe choice; anything bigger
- * starts on MEDIUM, and the performance monitor drops it to LOW by itself if FPS stays
- * under 45 (`degrade`, auto-picked levels only). A level picked in Settings is
- * remembered on this device and wins over both.
+ * Everyone starts on LOW - which looks nearly as good as MEDIUM - and can raise it in
+ * Settings; a level picked there is remembered on this device. Below 45 FPS the
+ * resolution steps down by itself (`degrade`).
  */
 export const DEFAULT_LEVEL = 'LOW'
 
-function detectLevel() {
-  if (typeof navigator === 'undefined') return DEFAULT_LEVEL
-  const cores = navigator.hardwareConcurrency || 0
-  return isMobileDevice() || cores <= 4 ? 'LOW' : 'MEDIUM'
-}
-
-const initialLevel = readSaved() || detectLevel()
+const initialLevel = readSaved() || DEFAULT_LEVEL
 
 export const useQuality = create((set, get) => ({
   level: initialLevel,

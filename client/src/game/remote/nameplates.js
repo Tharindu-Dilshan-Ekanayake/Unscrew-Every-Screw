@@ -12,7 +12,7 @@ import { runtime } from '../runtime'
  * a lone bubble over your character (`placeLocalBubble`), placed by the follow camera.
  */
 
-export const NAMEPLATE_POOL_SIZE = 10
+export const NAMEPLATE_POOL_SIZE = 20
 
 /** Your bubble floats this far above your feet (players are 1.8 tall, tags sit at 2.05). */
 const LOCAL_BUBBLE_HEIGHT = 2.2

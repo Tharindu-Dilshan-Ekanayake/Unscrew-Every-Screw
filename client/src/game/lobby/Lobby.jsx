@@ -217,6 +217,40 @@ function LitSeats() {
   return <primitive object={mesh} />
 }
 
+/** A chevron for the floor, its tip at the origin pointing north: glowing yellow, outlined dark. */
+function floorArrow() {
+  const b = new PropBuilder()
+  for (const side of [-1, 1]) {
+    const a = 0.75
+    const dx = side * Math.sin(a)
+    const dz = Math.cos(a)
+    const yaw = [0, -Math.atan2(dz, dx), 0]
+    b.box((dx * 1.7) / 2, 0.05, (dz * 1.7) / 2, 1.7, 0.02, 0.62, PALETTE.trim, STYLE.SMOOTH, yaw)
+    b.box((dx * 1.55) / 2, 0.07, (dz * 1.55) / 2, 1.55, 0.02, 0.42, '#ffd23a', STYLE.GLOW, yaw)
+  }
+  return b.build()
+}
+
+/** Arrows along the main path to the SOLO pad (south to north), then one to each team section. */
+const PATH_ARROWS = [22, 17.5, 13, 8.5, 4, -0.3].map((z) => [0, z])
+const SECTION_ARROWS = PAD_SECTIONS.map((s) => [s.x, -14.9])
+
+/** The floor arrows: a wave of light runs up the path to the SOLO pad; the section arrows pulse together. */
+function FloorArrows() {
+  const mesh = useSwarm(floorArrow, PATH_ARROWS.length + SECTION_ARROWS.length, (m, t) => {
+    _q.identity()
+    for (let i = 0; i < PATH_ARROWS.length; i += 1) {
+      const wave = Math.max(0, Math.sin(t * 3 - i * 0.8)) ** 4
+      m.setMatrixAt(i, _m.compose(_p.set(PATH_ARROWS[i][0], 0, PATH_ARROWS[i][1]), _q, _s.setScalar(1 + wave * 0.35)))
+    }
+    const pulse = 1 + Math.max(0, Math.sin(t * 2.4)) ** 3 * 0.25
+    for (let i = 0; i < SECTION_ARROWS.length; i += 1) {
+      m.setMatrixAt(PATH_ARROWS.length + i, _m.compose(_p.set(SECTION_ARROWS[i][0], 0, SECTION_ARROWS[i][1]), _q, _s.setScalar(pulse)))
+    }
+  })
+  return <primitive object={mesh} />
+}
+
 function moteGeometry() {
   const b = new PropBuilder()
   b.box(0, 0, 0, 1, 1, 1, '#fffbe0', STYLE.GLOW)
@@ -368,7 +402,15 @@ function TeamPadSign({ pad }) {
   return <mesh geometry={sign.geometry} material={sign.material} position={[pad.x, 2.35, padSignZ(pad) + 0.08]} />
 }
 
-const BOARD_TITLES = { screws: 'TOP UNSCREWERS', rooms: 'ROOMS ESCAPED' }
+const BOARD_TITLES = { screws: 'TOP UNSCREWERS', rooms: 'ROOMS ESCAPED', playtime: 'MOST PLAYTIME' }
+
+/** Seconds played, as hours and minutes: "3h 25m", or "45m". */
+const formatPlaytime = (seconds) => {
+  const minutes = Math.floor((Number(seconds) || 0) / 60)
+  const h = Math.floor(minutes / 60)
+  return h ? `${h}h ${String(minutes % 60).padStart(2, '0')}m` : `${minutes}m`
+}
+const BOARD_FORMATS = { playtime: formatPlaytime }
 
 /** A board drawn on a canvas (boards.js) on an unlit plane, built once and disposed with its component. */
 function useBoard(width, height, size, draw) {
@@ -395,11 +437,12 @@ function useBoard(width, height, size, draw) {
 function Board({ board }) {
   const rows = useGame((s) => s.leaderboards?.[board.id])
   const title = BOARD_TITLES[board.id]
-  const sign = useBoard(512, 340, [6.6, 4.4], (canvas, redraw) => drawLeaderboard(canvas, redraw, title, [], formatNumber))
+  const format = BOARD_FORMATS[board.id] || formatNumber
+  const sign = useBoard(512, 340, [6.6, 4.4], (canvas, redraw) => drawLeaderboard(canvas, redraw, title, [], format))
   useEffect(() => {
     const top = (rows || []).slice(0, 8)
-    sign.texture.userData.redraw((canvas, redraw) => drawLeaderboard(canvas, redraw, title, top, formatNumber))
-  }, [rows, sign, title])
+    sign.texture.userData.redraw((canvas, redraw) => drawLeaderboard(canvas, redraw, title, top, format))
+  }, [rows, sign, title, format])
   // Just in front of the board's face (it faces the yard).
   const dir = board.x < 0 ? -1 : 1
   return <mesh geometry={sign.geometry} material={sign.material} position={[board.x + dir * 0.13, 3.6, board.z]} rotation={[0, board.yaw, 0]} />
@@ -451,6 +494,7 @@ export function Lobby() {
       <Conveyor />
       <Smoke />
       <PadArrows />
+      <FloorArrows />
       <LitSeats />
       {particles && <PadMotes />}
       <StationDisplays />
@@ -459,11 +503,11 @@ export function Lobby() {
       {/* SOLO written on its pad, read from the path as you walk up. */}
       <Sign
         lines={[
-          { text: 'SOLO', size: 150, fill: '#ffffff' },
+          { text: 'SOLO', size: 160, fill: '#ffffff' },
           { text: 'play on your own', size: 46, fill: padLook(SOLO_PAD).glow },
         ]}
         options={{}}
-        size={[4.6, 2.1]}
+        size={[6.8, 3.1]}
         position={[SOLO_PAD.x, 0.15, SOLO_PAD.z + 0.2]}
         rotation={[-Math.PI / 2, 0, 0]}
       />

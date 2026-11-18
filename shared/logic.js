@@ -273,6 +273,13 @@ export function newRunSpec(profile, chapterId, diff, rand = Math.random) {
  * (`team`), the saved run is set aside untouched (`profile.soloRun`) - team runs are
  * never saved, and when this one ends the solo run comes back (endTeamRun).
  */
+/**
+ * Team runs are just for fun: nothing in one counts towards the player's own progress -
+ * no saved run, unlocks, best times, clear rewards, stats, quests or badges. The one
+ * thing kept: Crystals unscrewed from crystal screws (session.js).
+ */
+export const countsForProgress = (profile) => !profile.run?.team
+
 export function joinFresh(profile, spec, now, { team = false } = {}) {
   const chapter = CHAPTERS[chapterIndex(spec.chapter)]
   if (team && !profile.run?.team) {
@@ -281,7 +288,7 @@ export function joinFresh(profile, spec, now, { team = false } = {}) {
   }
   profile.run = { ...spec, ...freshEconomy(profile, chapter), active: true, savedAt: now }
   if (team) profile.run.team = true
-  profile.stats.runs += 1
+  else profile.stats.runs += 1
   return { ok: true }
 }
 
@@ -328,8 +335,10 @@ export function sellBag(profile) {
   run.cash += cash
   run.bag = 0
   run.bagValue = 0
-  profile.stats.sells += 1
-  profile.stats.cashEarned += cash
+  if (!run.team) {
+    profile.stats.sells += 1
+    profile.stats.cashEarned += cash
+  }
   return { ok: true, cash, screws }
 }
 
@@ -359,7 +368,7 @@ export function buyUpgrade(profile, stat) {
   if (!Number.isFinite(cost) || run.cash < cost) return { ok: false, reason: 'cash' }
   run.cash -= cost
   run.up[stat] += 1
-  profile.stats.upgrades += 1
+  if (!run.team) profile.stats.upgrades += 1
   return { ok: true, cost, level: run.up[stat] }
 }
 
@@ -374,6 +383,13 @@ export function clearChapter(profile) {
   const key = `${run.chapter}:${run.diff}`
   const prevBest = profile.best[key] || 0
   const time = Math.round(run.time)
+  if (run.team) {
+    // Just for fun: the team's clear changes nothing of the player's own (and their solo
+    // run, set aside, is back).
+    const result = { ok: true, done: true, team: true, chapter: run.chapter, diff: run.diff, time, best: prevBest, newBest: false, crystals: 0, screws: run.screws, unlockedDifficulty: null, unlockedChapter: null }
+    endTeamRun(profile)
+    return result
+  }
   // Best times are solo: a team's clear counts for everything else, but not the record.
   const best = run.team ? prevBest : prevBest ? Math.min(prevBest, time) : time
   if (best) profile.best[key] = best

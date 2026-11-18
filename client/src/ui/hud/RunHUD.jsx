@@ -11,7 +11,7 @@ import { fp } from '../../game/stage/fpInput'
 import { runtime } from '../../game/runtime'
 import { pickToolSlot } from '../../game/toolActions'
 import { useGame } from '../../store/game'
-import { useQuality } from '../../store/quality'
+import { useInput } from '../../store/input'
 import Icon from '../Icon'
 import StrokeText from '../StrokeText'
 import useNow from '../useNow'
@@ -78,7 +78,7 @@ function Objective() {
   const step = useGame((s) => s.profile.tutorialStep)
   const left = useGame((s) => s.profile.run?.left ?? 1)
   const screws = useGame((s) => s.profile.stats.screws)
-  const isMobile = useQuality((s) => s.isMobile)
+  const isMobile = useInput((s) => s.touch)
   let text = left === 0 ? 'The exit is open! Walk through the door' : 'Unscrew every screw to open the exit!'
   if (step < TUTORIAL.length && left > 0) {
     const t = TUTORIAL[step]
@@ -335,7 +335,7 @@ const CONTROLS = [
  * the browser won't capture it (drag to look instead), the first click puts it away.
  */
 function ClickToPlay() {
-  const isMobile = useQuality((s) => s.isMobile)
+  const isMobile = useInput((s) => s.touch)
   const panel = useGame((s) => s.panel)
   const [locked, setLocked] = useState(fp.locked)
   const [clicked, setClicked] = useState(false)

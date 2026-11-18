@@ -88,7 +88,7 @@ shows. Body proportions are applied by moving bones, so accessories follow them.
 |-------------------------|---------------------------------------------------------------|
 | `BLOXITY_REPORT_TOKEN`  | Token for leaderboard and room reports (none set = no reports) |
 | `MATCHMAKER_REPORT_URL` | Where the Open Rooms reporter posts (injected by Boxity hosting) |
-| `BLOXITY_GAME_ID`       | Hosted game id for reports (default `1-phone-drop`)              |
+| `BLOXITY_GAME_ID`       | Hosted game id for reports (default `unscrew-every-screw`)              |
 | `LEGION_WEBHOOK_SECRET` | Must match the webhook's `x-legion-webhook-secret` header     |
 | `MONGODB_URI`           | Shared database for profiles, Gems grants and the save-ticket secret. Required when hosted: without it saves go to a file inside the pod and are lost on every redeploy (the server logs an error and `/api/health` shows `db: "sqlite"`) |
 | `BLOXITY_API_URL` etc.  | Platform URLs, injected by Boxity hosting; no defaults are written in code (`server/src/bloxityEnv.js`) |

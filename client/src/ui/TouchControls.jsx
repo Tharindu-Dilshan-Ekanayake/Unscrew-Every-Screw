@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 
 import { runtime } from '../game/runtime'
 import { useGame } from '../store/game'
+import { useInput } from '../store/input'
 import Icon from './Icon'
 import StrokeText from './StrokeText'
 import { GRADIENTS } from './hud/style'
@@ -19,11 +20,6 @@ function aimAt(e, rect) {
   t.y = e.clientY - rect.top
   t.nx = (t.x / rect.width) * 2 - 1
   t.ny = 1 - (t.y / rect.height) * 2
-}
-
-function detectTouch() {
-  if (typeof window === 'undefined') return false
-  return window.matchMedia?.('(pointer: coarse)').matches || navigator.maxTouchPoints > 0
 }
 
 const roundButton = (size, background) => ({ width: size, height: size, background, border: '4px solid #111' })
@@ -64,22 +60,13 @@ function HoldButton({ label, className, size, gradient, inputKey, children }) {
  * re-renders React.
  */
 export function TouchControls() {
-  const [isTouch, setIsTouch] = useState(detectTouch)
+  const isTouch = useInput((s) => s.touch)
   const inRun = useGame((s) => Boolean(s.profile.run?.active))
   const panelOpen = useGame((s) => s.panel !== null)
   const baseRef = useRef(null)
   const knobRef = useRef(null)
   const active = useRef({ id: null, x: 0, y: 0 })
   const look = useRef({ id: null, x: 0, y: 0 })
-
-  useEffect(() => {
-    if (isTouch) return undefined
-    const onTouch = (e) => {
-      if (e.pointerType === 'touch') setIsTouch(true)
-    }
-    window.addEventListener('pointerdown', onTouch)
-    return () => window.removeEventListener('pointerdown', onTouch)
-  }, [isTouch])
 
   useEffect(
     () => () => {

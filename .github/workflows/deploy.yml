@@ -1,9 +1,10 @@
-# Ships Phone Plunge to Bloxity Legion: the dev branch to the dev channel, main to prod.
+# Ships Unscrew Every Screw (in-game: Screwball Escape) to Bloxity Legion: the dev branch to
+# the dev channel, main to prod.
 #
 #   server   -> Docker image in this repo's GitHub Container Registry, then Legion rolls
 #               it out behind its matchmaker (players reach it only through that)
-#   frontend -> the built client, served at https://1-phone-drop.play.bloxity.io
-#               (prod) and https://1-phone-drop.dev.play.bloxity.io (dev)
+#   frontend -> the built client, served at https://unscrew-every-screw.play.bloxity.io
+#               (prod) and https://unscrew-every-screw.dev.play.bloxity.io (dev)
 #
 # Every push deploys to the production platform, and to the staging platform too once
 # its token exists. A manual run (Actions -> Run workflow) deploys any branch to the one
@@ -13,7 +14,7 @@
 #   LEGION_DEPLOY_TOKEN        production platform (required)
 #   LEGION_DEPLOY_TOKEN_STAGE  staging platform (optional; staging is skipped without it)
 # After the first run, make the ghcr.io package public so Legion can pull it
-# (repo -> Packages -> 1-phone-drop-server -> Package settings -> Change visibility).
+# (repo -> Packages -> unscrew-every-screw-server -> Package settings -> Change visibility).
 #
 # One client build works on every platform: the Bloxity SDK and the server find their
 # own environment at runtime, so no URL or environment goes into the build.
@@ -32,10 +33,10 @@ on:
         default: staging
 
 env:
-  GAME_ID: 1-phone-drop
+  GAME_ID: unscrew-every-screw
   # Seats per pod: the Colyseus room's maxClients (GameRoom.js MAX_CLIENTS). When a pod
   # fills to it, Legion's matchmaker starts another.
-  SEAT_CAP: 10
+  SEAT_CAP: 20
 
 concurrency:
   group: deploy-${{ github.ref_name }}

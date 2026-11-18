@@ -45,7 +45,7 @@ class FlyingPool {
     this.enabled = getQuality().screwFx
     this.sparks = getQuality().particles
     this.geometry = createLooseScrewGeometry(8)
-    this.texture = createHeadTexture(head, 128)
+    this.texture = createHeadTexture(head, 256)
     this.material = createScrewMaterial(this.texture, false)
     this.mesh = new InstancedMesh(this.geometry, this.material, POOL)
     this.mesh.frustumCulled = false

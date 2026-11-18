@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { clearChapter, createProfile, isChapterUnlocked, isDifficultyUnlocked, normalizeProfile, startRun } from '../../shared/logic.js'
+import { buyUpgrade, clearChapter, createProfile, isChapterUnlocked, normalizeProfile, sellBag, startRun } from '../../shared/logic.js'
 import { PadManager, standingOn } from '../../shared/pads.js'
+import { SCREW_CRYSTAL } from '../../shared/balance.js'
 import { PlayerSession, startParty } from '../../shared/session.js'
 import { PAD_SECTIONS, padById, playPadAt, TEAM_PADS } from '../../shared/world.js'
 
@@ -100,7 +101,7 @@ function session(profile) {
   return new PlayerSession(profile, { now: 0, emit: () => {}, getPosition: () => ({ x: 0, y: 0, z: 0 }), onTeleport: () => {}, rand: () => 0.5 })
 }
 
-test('a team carries a newer player through a chapter they had not reached - and then it is theirs', () => {
+test('a team takes a newer player through a chapter they have not reached - just for fun: it stays locked', () => {
   const veteran = createProfile('v', 'Vet')
   veteran.cleared.workshop = 1
   const newbie = createProfile('n', 'New')
@@ -109,19 +110,46 @@ test('a team carries a newer player through a chapter they had not reached - and
   const host = session(veteran)
   const guest = session(newbie)
   const run = startParty(host, [host, guest], { action: 'start', chapter: 'boiler', diff: 0, pad: 'boiler-2' }, 0)
-  assert.ok(run, 'the newer player joins the team run')
+  assert.ok(run, 'the newer player plays the team run')
   assert.equal(newbie.run.chapter, 'boiler')
   assert.equal(newbie.run.runId, veteran.run.runId)
 
+  const before = structuredClone({ crystals: newbie.crystals, stats: newbie.stats, cleared: newbie.cleared, best: newbie.best, badges: newbie.badges })
   const result = clearChapter(newbie)
   assert.equal(result.ok, true)
-  assert.equal(result.unlockedChapter, 'The Lab')
-  // The chapter they cleared is open to them now, and so is the next - no gaps.
-  assert.equal(isChapterUnlocked(newbie, 'boiler'), true)
-  assert.equal(isChapterUnlocked(newbie, 'lab'), true)
-  assert.equal(isDifficultyUnlocked(newbie, 'boiler', 1), true, 'Hard next, as for anyone who cleared Normal')
-  // The host still can't pick what they haven't reached.
-  assert.equal(startParty(guest, [guest], { action: 'start', chapter: 'lab', diff: 2 }, 0), null)
+  assert.equal(result.team, true)
+  assert.equal(result.crystals, 0)
+  assert.equal(result.unlockedChapter, null)
+  // Nothing of the team's clear is the player's own.
+  assert.equal(isChapterUnlocked(newbie, 'boiler'), false)
+  assert.equal(isChapterUnlocked(newbie, 'lab'), false)
+  assert.deepEqual({ crystals: newbie.crystals, stats: newbie.stats, cleared: newbie.cleared, best: newbie.best, badges: newbie.badges }, before)
+})
+
+test('screws, sales, upgrades, quests and play time in a team run count for nothing', () => {
+  const a = createProfile('a', 'A')
+  const b = createProfile('b', 'B')
+  const host = session(a)
+  const guest = session(b)
+  startParty(host, [host, guest], { action: 'start', chapter: 'workshop', diff: 0, pad: 'workshop-2' }, 0)
+  const before = structuredClone({ crystals: b.crystals, stats: b.stats, quests: b.quests, tutorialStep: b.tutorialStep })
+  // Hand the guest a bag to sell and cash to spend, as if they'd played a while.
+  b.run.bag = 5
+  b.run.bagValue = 50
+  b.run.cash = 10_000
+  sellBag(b)
+  buyUpgrade(b, 'speed')
+  guest.tick(120, 1000)
+  guest.quest('screws', 25, 1000)
+  guest.badge('firstScrew')
+  assert.deepEqual({ crystals: b.crystals, stats: b.stats, quests: b.quests, tutorialStep: b.tutorialStep }, before)
+  assert.deepEqual(b.badges, [])
+  // Back to solo: it all counts again.
+  guest.exitRun(2000)
+  startParty(guest, [guest], { action: 'start', chapter: 'workshop', diff: 0 }, 3000)
+  guest.tick(30, 4000)
+  assert.ok(b.stats.playtime >= 30)
+  assert.equal(b.stats.runs, 1)
 })
 
 test('team runs are never saved: your solo save waits, and is back when the team run ends', () => {
@@ -165,7 +193,7 @@ test('team runs are never saved: your solo save waits, and is back when the team
   friend.run.time = 95
   const result = clearChapter(friend)
   assert.equal(result.ok, true)
-  assert.equal(friend.cleared.workshop, 1)
+  assert.equal(friend.cleared.workshop, undefined, 'a team clear unlocks nothing')
   assert.deepEqual(friend.run, solo)
   // Best times are solo: a team clear doesn't set one.
   assert.equal(result.team, true)
@@ -194,4 +222,24 @@ test('a solo run is saved as before', () => {
   const result = clearChapter(p)
   assert.equal(result.newBest, true)
   assert.equal(p.best['workshop:0'], 120)
+})
+
+test('crystals unscrewed in a team run are kept - the one thing a team run keeps', () => {
+  const a = createProfile('a', 'A')
+  const b = createProfile('b', 'B')
+  const pos = { x: 0, y: 0, z: 0 }
+  let now = 0
+  const host = session(a)
+  const guest = new PlayerSession(b, { now, emit: () => {}, getPosition: () => pos, onTeleport: (x, z) => Object.assign(pos, { x, y: 0, z }), rand: () => 0.5 })
+  const run = startParty(host, [host, guest], { action: 'start', chapter: 'workshop', diff: 0, pad: 'workshop-2' }, now)
+  // A crystal screw on the floor near the middle (made one, if the room has none there).
+  const layout = run.layout
+  const i = [...Array(layout.count).keys()].find((k) => layout.bucket[k] === 0 && Math.hypot(layout.pos[k * 3], layout.pos[k * 3 + 2]) < 2)
+  run.kinds[i] = SCREW_CRYSTAL
+  Object.assign(pos, { x: layout.pos[i * 3], y: 0, z: layout.pos[i * 3 + 2] + 0.6 })
+  const statsBefore = structuredClone(b.stats)
+  now += 2000
+  guest.handle('unscrew', { ids: [i] }, now)
+  assert.ok(b.crystals > 0, 'the crystals are the player\'s')
+  assert.deepEqual(b.stats, statsBefore, 'but nothing else counts')
 })
